@@ -1,0 +1,13 @@
+[workspace]
+members = ["vp-core", "editor"]
+resolver = "2"
+
+[workspace.dependencies]
+ffmpeg-next = "8.0"
+cpal = "0.15"
+egui = "0.30"
+eframe = "0.30"
+crossbeam-channel = "0.5"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"

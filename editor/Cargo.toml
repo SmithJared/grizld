@@ -1,0 +1,17 @@
+[package]
+name = "editor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "grizld"
+path = "src/main.rs"
+
+[dependencies]
+vp-core = { path = "../vp-core" }
+eframe = { workspace = true }
+egui = { workspace = true }
+cpal = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rfd = "0.15"

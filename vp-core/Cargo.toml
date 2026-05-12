@@ -1,0 +1,10 @@
+[package]
+name = "vp-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ffmpeg-next = { workspace = true }
+crossbeam-channel = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
