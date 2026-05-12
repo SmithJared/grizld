@@ -96,6 +96,7 @@ impl EditorApp {
                 example: ":quit or :q".to_string(),
             },
         ];
+        
 
         // Create shared audio state
         let audio_state = SharedAudioState::new();

@@ -1,7 +1,7 @@
-use ffmpeg_next as ffmpeg;
 use ffmpeg::format::Pixel;
 use ffmpeg::software::scaling::{context::Context as ScalerContext, flag::Flags};
 use ffmpeg::util::frame::video::Video as AVFrame;
+use ffmpeg_next as ffmpeg;
 
 use crate::error::VpResult;
 use crate::types::{PixelFormat, VideoFrame};
@@ -24,21 +24,24 @@ impl VideoDecoder {
 
         // Try to find a hardware decoder first (e.g., h264_videotoolbox on macOS)
         let decoder_result: Result<ffmpeg::decoder::Video, ffmpeg::Error> =
-            Self::try_hardware_decoder(codec_id, stream)
-            .or_else(|e| {
-                tracing::warn!("Hardware decoder not available: {}, falling back to software", e);
+            Self::try_hardware_decoder(codec_id, stream).or_else(|e| {
+                tracing::warn!(
+                    "Hardware decoder not available: {}, falling back to software",
+                    e
+                );
                 let context = ffmpeg::codec::context::Context::from_parameters(parameters)?;
                 context.decoder().video()
             });
 
         let decoder = decoder_result?;
-        let codec_name = decoder.codec()
+        let codec_name = decoder
+            .codec()
             .map(|c| c.name().to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        let is_hardware = codec_name.contains("videotoolbox") ||
-                          codec_name.contains("qsv") ||
-                          codec_name.contains("nvdec") ||
-                          codec_name.contains("vaapi");
+        let is_hardware = codec_name.contains("videotoolbox")
+            || codec_name.contains("qsv")
+            || codec_name.contains("nvdec")
+            || codec_name.contains("vaapi");
 
         tracing::info!(
             "Video decoder: {} ({})",
@@ -67,7 +70,11 @@ impl VideoDecoder {
 
         tracing::info!(
             "Decoder setup: {}x{}, input: {:?}, output: {:?}, time_base: {:.6}",
-            width, height, input_format, output_format, time_base_f64
+            width,
+            height,
+            input_format,
+            output_format,
+            time_base_f64
         );
 
         Ok(Self {
@@ -194,10 +201,14 @@ impl VideoDecoder {
             static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-            if frame_num % 30 == 0 {  // Log every 30 frames (roughly once per second at 30fps)
+            if frame_num % 30 == 0 {
+                // Log every 30 frames (roughly once per second at 30fps)
                 tracing::info!(
                     "DECODE: {}x{} frame took {:.2}ms (packet had {} frames)",
-                    self.width, self.height, avg_time, frames.len()
+                    self.width,
+                    self.height,
+                    avg_time,
+                    frames.len()
                 );
             }
         }
