@@ -3,6 +3,7 @@
 
 mod app;
 mod audio;
+mod buffer_manager;
 mod command;
 mod renderer;
 

@@ -1,16 +1,53 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vp_core::buffer::AudioBuffer;
 use vp_core::sync::PlaybackClock;
 
+/// Shared audio state that can be updated when switching buffers
+#[derive(Clone)]
+pub struct SharedAudioState {
+    buffer: Arc<Mutex<Option<Arc<AudioBuffer>>>>,
+    clock: Arc<Mutex<Option<Arc<PlaybackClock>>>>,
+}
+
+impl SharedAudioState {
+    pub fn new() -> Self {
+        Self {
+            buffer: Arc::new(Mutex::new(None)),
+            clock: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Set the active audio buffer and clock
+    pub fn set_active(&self, buffer: Arc<AudioBuffer>, clock: Arc<PlaybackClock>) {
+        *self.buffer.lock().unwrap() = Some(buffer);
+        *self.clock.lock().unwrap() = Some(clock);
+    }
+
+    /// Clear the active buffer (when no video is playing)
+    pub fn clear(&self) {
+        *self.buffer.lock().unwrap() = None;
+        *self.clock.lock().unwrap() = None;
+    }
+
+    fn get_buffer(&self) -> Option<Arc<AudioBuffer>> {
+        self.buffer.lock().unwrap().clone()
+    }
+
+    fn get_clock(&self) -> Option<Arc<PlaybackClock>> {
+        self.clock.lock().unwrap().clone()
+    }
+}
+
 pub struct AudioOutput {
     _stream: Stream,
+    pub shared_state: SharedAudioState,
 }
 
 impl AudioOutput {
-    /// Initialize CPAL audio output
-    pub fn new(audio_buffer: Arc<AudioBuffer>, clock: Arc<PlaybackClock>) -> Result<Self, String> {
+    /// Initialize CPAL audio output with shared state
+    pub fn new(shared_state: SharedAudioState) -> Result<Self, String> {
         let host = cpal::default_host();
 
         let device = host
@@ -34,11 +71,13 @@ impl AudioOutput {
 
         let config: StreamConfig = config.into();
 
+        let state_for_callback = shared_state.clone();
+
         let stream = device
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    audio_callback(data, &audio_buffer, &clock)
+                    audio_callback(data, &state_for_callback)
                 },
                 |err| {
                     tracing::error!("Audio stream error: {}", err);
@@ -53,11 +92,33 @@ impl AudioOutput {
 
         tracing::info!("Audio output initialized and playing");
 
-        Ok(Self { _stream: stream })
+        Ok(Self {
+            _stream: stream,
+            shared_state,
+        })
     }
 }
 
-fn audio_callback(output: &mut [f32], audio_buffer: &AudioBuffer, clock: &PlaybackClock) {
+fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
+    // Get the current active buffer and clock
+    let audio_buffer = match shared_state.get_buffer() {
+        Some(buffer) => buffer,
+        None => {
+            // No active buffer, output silence
+            output.fill(0.0);
+            return;
+        }
+    };
+
+    let clock = match shared_state.get_clock() {
+        Some(clock) => clock,
+        None => {
+            // No active clock, output silence
+            output.fill(0.0);
+            return;
+        }
+    };
+
     // Only output audio if playing
     if !clock.state().is_playing() {
         // Fill with silence when paused/stopped

@@ -13,6 +13,16 @@ pub enum Command {
     Pause,
     /// Seek to a position (:seek <target>)
     Seek(SeekTarget),
+    /// Switch to buffer by ID (:buffer <id> or :b <id>)
+    Buffer(usize),
+    /// Next buffer (:bnext or :bn)
+    BufferNext,
+    /// Previous buffer (:bprev or :bp)
+    BufferPrev,
+    /// List all buffers (:buffers or :ls)
+    BufferList,
+    /// Delete buffer by ID (:bdelete <id> or :bd <id>)
+    BufferDelete(usize),
     /// Quit the editor (:quit or :q)
     Quit,
     /// No operation (empty command)
@@ -115,6 +125,36 @@ pub fn parse_command(input: &str) -> Result<Command, String> {
             }
 
             Ok(Command::Seek(SeekTarget::Absolute(time)))
+        }
+
+        "buffer" | "b" => {
+            if parts.len() < 2 {
+                return Err("Usage: :buffer <id> (e.g., :buffer 1)".to_string());
+            }
+
+            let buffer_id = parts[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid buffer ID")?;
+
+            Ok(Command::Buffer(buffer_id))
+        }
+
+        "bnext" | "bn" => Ok(Command::BufferNext),
+
+        "bprev" | "bp" => Ok(Command::BufferPrev),
+
+        "buffers" | "ls" => Ok(Command::BufferList),
+
+        "bdelete" | "bd" => {
+            if parts.len() < 2 {
+                return Err("Usage: :bdelete <id> (e.g., :bdelete 1)".to_string());
+            }
+
+            let buffer_id = parts[1]
+                .parse::<usize>()
+                .map_err(|_| "Invalid buffer ID")?;
+
+            Ok(Command::BufferDelete(buffer_id))
         }
 
         "quit" | "q" => Ok(Command::Quit),

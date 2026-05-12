@@ -1,6 +1,10 @@
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use vp_core::types::VideoFrame;
 
+/// Maximum texture dimension (downscale 4K to this for performance)
+const MAX_TEXTURE_WIDTH: u32 = 1920;
+const MAX_TEXTURE_HEIGHT: u32 = 1080;
+
 /// Renders video frames as egui textures
 pub struct VideoRenderer {
     texture: Option<TextureHandle>,
@@ -13,14 +17,92 @@ impl VideoRenderer {
 
     /// Update the texture with a new frame
     pub fn update_texture(&mut self, ctx: &egui::Context, frame: &VideoFrame) {
-        let image = ColorImage::from_rgba_unmultiplied(
-            [frame.width as _, frame.height as _],
-            &frame.data,
-        );
+        let start = std::time::Instant::now();
 
-        // Create/recreate texture
-        // Note: egui caches textures by name, so this is reasonably efficient
+        // Downscale if needed
+        let (width, height, data) = if frame.width > MAX_TEXTURE_WIDTH || frame.height > MAX_TEXTURE_HEIGHT {
+            let downscale_start = std::time::Instant::now();
+            let result = Self::downscale_frame(frame);
+            let downscale_time = downscale_start.elapsed().as_secs_f64() * 1000.0;
+
+            static LOG_DOWNSCALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+            if LOG_DOWNSCALE.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                tracing::info!(
+                    "Downscaling {}x{} → {}x{} (took {:.2}ms)",
+                    frame.width, frame.height, result.0, result.1, downscale_time
+                );
+            }
+
+            result
+        } else {
+            (frame.width, frame.height, frame.data.clone())
+        };
+
+        // Convert to ColorImage
+        let image_start = std::time::Instant::now();
+        let image = ColorImage::from_rgba_unmultiplied(
+            [width as _, height as _],
+            &data,
+        );
+        let image_time = image_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Upload to GPU
+        let upload_start = std::time::Instant::now();
         self.texture = Some(ctx.load_texture("video_frame", image, TextureOptions::LINEAR));
+        let upload_time = upload_start.elapsed().as_secs_f64() * 1000.0;
+
+        let total_time = start.elapsed().as_secs_f64() * 1000.0;
+
+        // Log every 30 frames
+        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if frame_num % 30 == 0 {
+            tracing::info!(
+                "TEXTURE: {}x{} | image={:.2}ms | upload={:.2}ms | total={:.2}ms",
+                width, height, image_time, upload_time, total_time
+            );
+        }
+    }
+
+    /// Downscale a frame using nearest-neighbor sampling
+    fn downscale_frame(frame: &VideoFrame) -> (u32, u32, Vec<u8>) {
+        let src_width = frame.width;
+        let src_height = frame.height;
+
+        // Calculate target dimensions maintaining aspect ratio
+        let aspect_ratio = src_width as f32 / src_height as f32;
+        let (target_width, target_height) = if aspect_ratio > (MAX_TEXTURE_WIDTH as f32 / MAX_TEXTURE_HEIGHT as f32) {
+            // Width-constrained
+            let w = MAX_TEXTURE_WIDTH;
+            let h = (w as f32 / aspect_ratio) as u32;
+            (w, h)
+        } else {
+            // Height-constrained
+            let h = MAX_TEXTURE_HEIGHT;
+            let w = (h as f32 * aspect_ratio) as u32;
+            (w, h)
+        };
+
+        let mut downscaled = Vec::with_capacity((target_width * target_height * 4) as usize);
+
+        let x_ratio = src_width as f32 / target_width as f32;
+        let y_ratio = src_height as f32 / target_height as f32;
+
+        for ty in 0..target_height {
+            let sy = (ty as f32 * y_ratio) as u32;
+            for tx in 0..target_width {
+                let sx = (tx as f32 * x_ratio) as u32;
+
+                let src_idx = ((sy * src_width + sx) * 4) as usize;
+                downscaled.push(frame.data[src_idx]);     // R
+                downscaled.push(frame.data[src_idx + 1]); // G
+                downscaled.push(frame.data[src_idx + 2]); // B
+                downscaled.push(frame.data[src_idx + 3]); // A
+            }
+        }
+
+        (target_width, target_height, downscaled)
     }
 
     /// Render the video texture in a UI

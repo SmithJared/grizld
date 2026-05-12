@@ -2,7 +2,7 @@ use egui::Key;
 use std::sync::Arc;
 use vp_core::types::PlaybackState;
 
-use crate::audio::AudioOutput;
+use crate::audio::{AudioOutput, SharedAudioState};
 use crate::command::{parse_command, Command, CommandExecutor};
 use crate::renderer::VideoRenderer;
 
@@ -20,6 +20,7 @@ pub struct EditorApp {
 
     // Audio output (must be kept alive)
     audio_output: Option<AudioOutput>,
+    audio_state: SharedAudioState,
 
     // Command mode state
     command_mode: bool,
@@ -65,16 +66,49 @@ impl EditorApp {
                 example: ":seek 10.5 or :seek +5 or :seek 50%".to_string(),
             },
             CommandSuggestion {
+                command: "buffer <id>".to_string(),
+                description: "Switch to buffer by ID".to_string(),
+                example: ":buffer 1 or :b 1".to_string(),
+            },
+            CommandSuggestion {
+                command: "bnext".to_string(),
+                description: "Switch to next buffer".to_string(),
+                example: ":bnext or :bn".to_string(),
+            },
+            CommandSuggestion {
+                command: "bprev".to_string(),
+                description: "Switch to previous buffer".to_string(),
+                example: ":bprev or :bp".to_string(),
+            },
+            CommandSuggestion {
+                command: "buffers".to_string(),
+                description: "List all open buffers".to_string(),
+                example: ":buffers or :ls".to_string(),
+            },
+            CommandSuggestion {
+                command: "bdelete <id>".to_string(),
+                description: "Close buffer by ID".to_string(),
+                example: ":bdelete 1 or :bd 1".to_string(),
+            },
+            CommandSuggestion {
                 command: "quit".to_string(),
                 description: "Exit editor".to_string(),
                 example: ":quit or :q".to_string(),
             },
         ];
 
+        // Create shared audio state
+        let audio_state = SharedAudioState::new();
+
+        // Create executor and set audio state
+        let mut executor = CommandExecutor::new();
+        executor.buffer_manager_mut().set_audio_state(audio_state.clone());
+
         Self {
-            executor: CommandExecutor::new(),
+            executor,
             renderer: VideoRenderer::new(),
             audio_output: None,
+            audio_state,
             command_mode: false,
             command_input: String::new(),
             command_history: Vec::new(),
@@ -198,14 +232,20 @@ impl EditorApp {
     }
 
     fn initialize_audio(&mut self) {
-        if let Some(player) = self.executor.player() {
-            let audio_buffer = Arc::new(player.audio_buffer().clone());
-            let clock = Arc::new(player.clock().clone());
-
-            match AudioOutput::new(audio_buffer, clock) {
+        // Only initialize audio output once
+        if self.audio_output.is_none() {
+            match AudioOutput::new(self.audio_state.clone()) {
                 Ok(audio) => {
                     self.audio_output = Some(audio);
-                    tracing::info!("Audio output initialized");
+                    tracing::info!("Audio output initialized with shared state");
+
+                    // Set the initial active buffer if one exists
+                    if let Some(player) = self.executor.player() {
+                        let audio_buffer = Arc::new(player.audio_buffer().clone());
+                        let clock = Arc::new(player.clock().clone());
+                        self.audio_state.set_active(audio_buffer, clock);
+                        tracing::info!("Audio state set to initial buffer");
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Failed to initialize audio: {}", e);
@@ -247,9 +287,32 @@ impl EditorApp {
 
     fn render_video_viewport(&mut self, ui: &mut egui::Ui) {
         if let Some(player) = self.executor.player() {
-            if let Some(frame) = player.get_current_frame() {
+            // Time how long it takes to get the current frame
+            let get_frame_start = std::time::Instant::now();
+            let frame_opt = player.get_current_frame();
+            let get_frame_time = get_frame_start.elapsed().as_secs_f64() * 1000.0;
+
+            if let Some(frame) = frame_opt {
+                // Time texture update
+                let texture_start = std::time::Instant::now();
                 self.renderer.update_texture(ui.ctx(), &frame);
+                let texture_time = texture_start.elapsed().as_secs_f64() * 1000.0;
+
+                // Time actual rendering
+                let render_start = std::time::Instant::now();
                 self.renderer.render(ui);
+                let render_time = render_start.elapsed().as_secs_f64() * 1000.0;
+
+                // Log every 30 frames
+                static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                if frame_num % 30 == 0 {
+                    tracing::info!(
+                        "RENDER: get_frame={:.2}ms | texture={:.2}ms | render={:.2}ms",
+                        get_frame_time, texture_time, render_time
+                    );
+                }
             } else {
                 ui.centered_and_justified(|ui| {
                     ui.label("Buffering...");
@@ -437,10 +500,15 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let frame_start = std::time::Instant::now();
+
         // Handle keyboard input
+        let keyboard_start = std::time::Instant::now();
         self.handle_keyboard_input(ctx);
+        let keyboard_time = keyboard_start.elapsed().as_secs_f64() * 1000.0;
 
         // Main panel
+        let ui_start = std::time::Instant::now();
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Video viewport (takes most of the space)
@@ -464,9 +532,26 @@ impl eframe::App for EditorApp {
                 self.render_command_line(ui);
             });
         });
+        let ui_time = ui_start.elapsed().as_secs_f64() * 1000.0;
 
         // Render command palette overlay
+        let palette_start = std::time::Instant::now();
         self.render_command_palette(ctx);
+        let palette_time = palette_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Total frame time
+        let total_frame_time = frame_start.elapsed().as_secs_f64() * 1000.0;
+
+        // Log frame timing every 30 frames
+        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if frame_num % 30 == 0 {
+            tracing::info!(
+                "FRAME: total={:.2}ms | keyboard={:.2}ms | ui={:.2}ms | palette={:.2}ms | fps={:.1}",
+                total_frame_time, keyboard_time, ui_time, palette_time, 1000.0 / total_frame_time
+            );
+        }
 
         // Request continuous repaints for video playback
         if self.executor.has_player() {

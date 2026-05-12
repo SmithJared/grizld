@@ -38,16 +38,25 @@ impl AudioBuffer {
     pub fn push(&self, audio: AudioSample) {
         let mut inner = self.inner.lock().unwrap();
 
-        // Update PTS based on this sample
+        let sample_count = audio.data.len();
+        let mut dropped = 0;
+
+        // Check if buffer is nearly full - if so, reject the entire sample
+        // This prevents PTS discontinuities from dropping samples in the middle
+        let would_overflow = inner.samples.len() + sample_count > inner.capacity_samples;
+        if would_overflow {
+            tracing::warn!(
+                "Audio buffer nearly full ({:.2}s), rejecting new samples at PTS {:.3}",
+                inner.samples.len() as f64 / (inner.sample_rate as f64 * 2.0),
+                audio.pts
+            );
+            return;
+        }
+
+        // Update PTS to the start of this sample (only when not dropping)
         inner.current_pts = audio.pts;
 
-        let sample_count = audio.data.len();
         for sample in audio.data {
-            if inner.samples.len() >= inner.capacity_samples {
-                // Buffer full - drop oldest samples
-                tracing::warn!("Audio buffer full, dropping old samples");
-                inner.samples.pop_front();
-            }
             inner.samples.push_back(sample);
         }
 

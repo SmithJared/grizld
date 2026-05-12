@@ -13,7 +13,7 @@ use crate::sync::PlaybackClock;
 use crate::types::{PlaybackState, VideoFrame, PTS};
 
 const CHANNEL_CAPACITY: usize = 64;
-const FRAME_BUFFER_CAPACITY: usize = 60;
+const FRAME_BUFFER_CAPACITY: usize = 15; // Reduced for 4K video (15 frames = ~500MB)
 const AUDIO_BUFFER_SECONDS: f64 = 2.0;
 const SAMPLE_RATE: u32 = 48000;
 
@@ -330,7 +330,20 @@ fn decode_loop(
                                     clock.seek(frame.pts);
                                     initial_sync_done.store(true, Ordering::Relaxed);
                                 }
-                                frame_buffer.push(frame);
+
+                                // Frame dropping: if this frame is already late, drop it
+                                let current_time = clock.current_time();
+                                if clock.state().is_playing() && frame.pts < current_time - 0.1 {
+                                    tracing::debug!("Dropping late frame: PTS {:.3} < clock {:.3}", frame.pts, current_time);
+                                    continue;
+                                }
+
+                                // Only push if we have room or if paused (need to buffer ahead)
+                                if !clock.state().is_playing() || !frame_buffer.is_full() {
+                                    frame_buffer.push(frame);
+                                } else {
+                                    tracing::debug!("Frame buffer full, dropping frame at PTS {:.3}", frame.pts);
+                                }
                             }
                         }
                         Err(e) => {
@@ -364,14 +377,18 @@ fn decode_loop(
             }
         }
 
-        // Backpressure: slow down decoding to match playback rate
-        // Don't decode faster than playback can consume
+        // Backpressure: audio buffer must NOT overflow (breaks clock sync)
+        // Video buffer can overflow (we drop frames gracefully)
         if clock.state().is_playing() {
-            // When playing, decode at roughly real-time speed
-            if frame_buffer.len() > 30 || audio_buffer.buffered_duration() > 1.0 {
-                std::thread::sleep(std::time::Duration::from_millis(10));
+            // CRITICAL: Audio buffer overflow breaks PTS tracking
+            // Sleep aggressively when audio buffer is nearly full
+            if audio_buffer.is_nearly_full() {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            } else if audio_buffer.buffered_duration() > 1.0 {
+                // More than 1 second buffered, slow down
+                std::thread::sleep(std::time::Duration::from_millis(5));
             } else {
-                // Allow some buffering
+                // Less than 1 second buffered, decode fast to stay ahead
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         } else {
@@ -379,7 +396,7 @@ fn decode_loop(
             if frame_buffer.is_full() || audio_buffer.is_nearly_full() {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             } else {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }
