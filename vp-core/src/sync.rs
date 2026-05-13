@@ -42,13 +42,22 @@ impl PlaybackClock {
     /// If paused/stopped, returns the last set PTS.
     pub fn current_time(&self) -> PTS {
         let state = self.state.lock().unwrap();
-        if state.state.is_playing() {
+        let pts = if state.state.is_playing() {
             // Calculate current time based on elapsed time since audio started
             let elapsed = state.audio_start_time.elapsed().as_secs_f64();
             state.audio_base_pts + elapsed
         } else {
             state.current_pts
-        }
+        };
+
+        tracing::trace!(
+            "🕐 current_time: state={:?}, pts={:.3}, base={:.3}",
+            state.state,
+            pts,
+            state.audio_base_pts
+        );
+
+        pts
     }
 
     /// Update the clock from the audio callback
@@ -71,6 +80,14 @@ impl PlaybackClock {
     /// Set the playback state
     pub fn set_state(&self, new_state: PlaybackState) {
         let mut state = self.state.lock().unwrap();
+        let old_state = state.state;
+
+        tracing::info!(
+            "🔄 set_state: {:?} → {:?} (current_pts={:.3})",
+            old_state,
+            new_state,
+            state.current_pts
+        );
 
         match new_state {
             PlaybackState::Playing => {
@@ -78,6 +95,7 @@ impl PlaybackClock {
                     // Starting playback - reset the audio timer
                     state.audio_start_time = Instant::now();
                     state.audio_base_pts = state.current_pts;
+                    tracing::info!("🔄 Starting playback: base_pts={:.3}", state.audio_base_pts);
                 }
             }
             PlaybackState::Paused | PlaybackState::Stopped => {
@@ -85,13 +103,14 @@ impl PlaybackClock {
                     // Pausing - capture the current time
                     let elapsed = state.audio_start_time.elapsed().as_secs_f64();
                     state.current_pts = state.audio_base_pts + elapsed;
+                    tracing::info!("🔄 Pausing: captured_pts={:.3}", state.current_pts);
                 }
             }
         }
 
         state.state = new_state;
 
-        tracing::debug!("Playback state changed to {:?} at PTS {:.3}", new_state, state.current_pts);
+        tracing::info!("🔄 State change complete: {:?}", new_state);
     }
 
     /// Seek to a specific time

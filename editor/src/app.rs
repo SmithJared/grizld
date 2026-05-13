@@ -350,6 +350,9 @@ impl EditorApp {
             let get_frame_time = get_frame_start.elapsed().as_secs_f64() * 1000.0;
 
             if let Some(frame) = frame_opt {
+                let player_state = player.state();
+                let clock_pts = player.current_time();
+
                 // Check if this is a hardware frame (macOS only)
                 #[cfg(target_os = "macos")]
                 let is_hardware = frame.data.is_hardware();
@@ -358,6 +361,13 @@ impl EditorApp {
 
                 if !is_hardware {
                     // Software frame - render with egui
+                    tracing::info!(
+                        "📺 DISPLAYING SOFTWARE FRAME: pts={:.3}, state={:?}, clock={:.3}",
+                        frame.pts,
+                        player_state,
+                        clock_pts
+                    );
+
                     let texture_start = std::time::Instant::now();
                     self.renderer.update_texture(ui.ctx(), &frame);
                     let texture_time = texture_start.elapsed().as_secs_f64() * 1000.0;
@@ -365,12 +375,20 @@ impl EditorApp {
                     self.renderer.render(ui);
                 } else {
                     // Hardware frame - will be rendered via Metal layer in update()
+                    tracing::info!(
+                        "📺 DISPLAYING HARDWARE FRAME: pts={:.3}, state={:?}, clock={:.3}",
+                        frame.pts,
+                        player_state,
+                        clock_pts
+                    );
+
                     // Just show a placeholder in egui
                     ui.centered_and_justified(|ui| {
                         ui.label("Hardware-accelerated video (rendered via Metal)");
                     });
                 }
             } else {
+                tracing::debug!("📺 NO FRAME TO DISPLAY (buffering)");
                 ui.centered_and_justified(|ui| {
                     ui.label("Buffering...");
                 });
@@ -624,18 +642,10 @@ impl eframe::App for EditorApp {
                 let height = height_logical as f64;
 
                 layer.set_bounds(x, y, width, height);
-
-                // Log every 60 frames to debug positioning
-                static LAYER_FRAME_COUNT: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let layer_frame_num =
-                    LAYER_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                if layer_frame_num % 60 == 0 {
-                    tracing::info!(
-                        "Metal layer: x={:.1}, y={:.1}, w={:.1}, h={:.1} (logical px, ppp={:.1})",
-                        x, y, width, height, pixels_per_point
-                    );
-                }
+                tracing::trace!(
+                    "Metal layer bounds: x={:.1}, y={:.1}, w={:.1}, h={:.1}",
+                    x, y, width, height
+                );
             }
 
             // Render hardware frame if available
@@ -646,6 +656,13 @@ impl eframe::App for EditorApp {
                             // Extract PixelBuffer from hardware frame
                             if let vp_core::types::FrameData::Hardware(ref pixel_buffer) = frame.data
                             {
+                                tracing::info!(
+                                    "🖼️  RENDERING TO METAL LAYER: pts={:.3}, state={:?}, clock={:.3}",
+                                    frame.pts,
+                                    player.state(),
+                                    player.current_time()
+                                );
+
                                 // Render to Metal layer
                                 if let Err(e) =
                                     video_renderer.render_frame(pixel_buffer, layer.layer())

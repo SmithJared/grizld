@@ -120,11 +120,15 @@ fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
     };
 
     // Only output audio if playing
-    if !clock.state().is_playing() {
+    let clock_state = clock.state();
+    if !clock_state.is_playing() {
         // Fill with silence when paused/stopped
         output.fill(0.0);
+        tracing::trace!("🔇 Audio callback: outputting silence (state={:?})", clock_state);
         return;
     }
+
+    tracing::trace!("🔊 Audio callback: playing (state={:?})", clock_state);
 
     // Pop samples from the buffer (returns actual samples + silence padding, plus count of real samples)
     let (samples, pts, actual_count) = audio_buffer.pop(output.len());

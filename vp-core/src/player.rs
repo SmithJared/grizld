@@ -126,7 +126,7 @@ impl VideoPlayer {
                 .map_err(|e| VpError::Io(e))?
         };
 
-        Ok(Self {
+        let player = Self {
             duration,
             _video_stream_index: video_stream_index,
             _audio_stream_index: audio_stream_index,
@@ -137,24 +137,50 @@ impl VideoPlayer {
             decode_thread: Some(decode_thread),
             stop_signal,
             command_tx,
-        })
+        };
+
+        tracing::info!(
+            "🎬 VideoPlayer created: duration={:.2}s, initial_state={:?}",
+            player.duration,
+            player.state()
+        );
+
+        Ok(player)
     }
 
     /// Start playback
     pub fn play(&mut self) {
+        let state_before = self.state();
+        let current_pts = self.current_time();
+
+        tracing::info!(
+            "▶️  PLAY called: state_before={:?}, current_pts={:.3}",
+            state_before,
+            current_pts
+        );
+
         // Reset audio buffer to current video position to ensure sync
         // This prevents audio from being ahead of video when play is pressed
-        let current_pts = self.current_time();
         self.audio_buffer.reset(current_pts);
-        tracing::info!("Playback started from PTS {:.3}, audio buffer reset", current_pts);
-
         self.clock.set_state(PlaybackState::Playing);
+
+        tracing::info!("▶️  PLAY completed: state_after={:?}", self.state());
     }
 
     /// Pause playback
     pub fn pause(&mut self) {
+        let state_before = self.state();
+        let current_pts = self.current_time();
+
+        tracing::info!(
+            "⏸️  PAUSE called: state_before={:?}, current_pts={:.3}",
+            state_before,
+            current_pts
+        );
+
         self.clock.set_state(PlaybackState::Paused);
-        tracing::info!("Playback paused");
+
+        tracing::info!("⏸️  PAUSE completed: state_after={:?}", self.state());
     }
 
     /// Stop playback
@@ -205,21 +231,51 @@ impl VideoPlayer {
 
     /// Get the frame to display at the current time
     pub fn get_current_frame(&self) -> Option<VideoFrame> {
+        let current_state = self.state();
         let current_time = self.current_time();
+        let buffer_len = self.frame_buffer.len();
+        let buffer_empty = self.frame_buffer.is_empty();
+
+        tracing::debug!(
+            "🎞️  get_current_frame: state={:?}, clock={:.3}s, buffer_len={}, buffer_empty={}",
+            current_state,
+            current_time,
+            buffer_len,
+            buffer_empty
+        );
+
         let frame = self.frame_buffer.get_frame_at(current_time);
 
         // If we can't find a frame at current time, use appropriate fallback
-        if frame.is_none() && !self.frame_buffer.is_empty() {
-            let fallback = if self.state().is_playing() {
+        if frame.is_none() && !buffer_empty {
+            let buffer_range = self.frame_buffer.pts_range();
+            tracing::debug!(
+                "🎞️  No exact frame match, using fallback. Buffer range: {:?}",
+                buffer_range
+            );
+
+            let fallback = if current_state.is_playing() {
                 // When playing, use latest frame (helps with videos that don't start at PTS 0.0)
                 let fb = self.frame_buffer.get_latest();
-                tracing::trace!("Fallback (playing): using latest frame");
+                if let Some(ref f) = fb {
+                    tracing::debug!("🎞️  FALLBACK (PLAYING): returning latest frame at PTS {:.3}", f.pts);
+                }
                 fb
             } else {
                 // When stopped/paused, use frame closest to current time to freeze properly
-                self.frame_buffer.get_frame_closest(current_time)
+                let fb = self.frame_buffer.get_frame_closest(current_time);
+                if let Some(ref f) = fb {
+                    tracing::debug!("🎞️  FALLBACK (PAUSED/STOPPED): returning closest frame at PTS {:.3}", f.pts);
+                }
+                fb
             };
             return fallback;
+        }
+
+        if let Some(ref f) = frame {
+            tracing::debug!("🎞️  EXACT MATCH: returning frame at PTS {:.3}", f.pts);
+        } else {
+            tracing::debug!("🎞️  NO FRAME: buffer is empty");
         }
 
         frame
@@ -319,11 +375,20 @@ fn decode_loop(
                             for frame in frames {
                                 // Sync clock to first frame on initial load
                                 if !initial_sync_done.load(Ordering::Relaxed) && frame_buffer.is_empty() {
-                                    tracing::info!("Initial sync: setting clock and audio buffer to first frame PTS {:.3}", frame.pts);
+                                    tracing::info!(
+                                        "🎬 INITIAL SYNC: first_frame_pts={:.3}, clock_state_before={:?}",
+                                        frame.pts,
+                                        clock.state()
+                                    );
                                     clock.seek(frame.pts);
                                     // Also sync audio buffer to ensure A/V alignment from the start
                                     audio_buffer.reset(frame.pts);
                                     initial_sync_done.store(true, Ordering::Relaxed);
+                                    tracing::info!(
+                                        "🎬 INITIAL SYNC complete: clock_state_after={:?}, clock_pts={:.3}",
+                                        clock.state(),
+                                        clock.current_time()
+                                    );
                                 }
 
                                 // Frame dropping: if this frame is already late, drop it
