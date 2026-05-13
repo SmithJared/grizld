@@ -69,6 +69,12 @@ impl FrameBuffer {
         inner.frames.back().cloned()
     }
 
+    /// Get the first frame in the buffer (lowest PTS)
+    pub fn get_first(&self) -> Option<VideoFrame> {
+        let inner = self.inner.lock().unwrap();
+        inner.frames.front().cloned()
+    }
+
     /// Clear all frames from the buffer
     pub fn clear(&self) {
         let mut inner = self.inner.lock().unwrap();

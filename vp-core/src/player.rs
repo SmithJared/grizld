@@ -142,8 +142,13 @@ impl VideoPlayer {
 
     /// Start playback
     pub fn play(&mut self) {
+        // Reset audio buffer to current video position to ensure sync
+        // This prevents audio from being ahead of video when play is pressed
+        let current_pts = self.current_time();
+        self.audio_buffer.reset(current_pts);
+        tracing::info!("Playback started from PTS {:.3}, audio buffer reset", current_pts);
+
         self.clock.set_state(PlaybackState::Playing);
-        tracing::info!("Playback started");
     }
 
     /// Pause playback
@@ -223,10 +228,34 @@ impl VideoPlayer {
             }
         }
 
-        // If we can't find a frame at current time, try to get the latest frame
-        // This helps with videos that don't start at PTS 0.0
+        // If we can't find a frame at current time, use appropriate fallback
         if frame.is_none() && !self.frame_buffer.is_empty() {
-            return self.frame_buffer.get_latest();
+            let fallback = if self.state().is_playing() {
+                // When playing, use latest frame (helps with videos that don't start at PTS 0.0)
+                let fb = self.frame_buffer.get_latest();
+                if let Some(ref f) = fb {
+                    tracing::debug!("FALLBACK (playing): clock={:.3}, using latest frame at PTS {:.3}", current_time, f.pts);
+                }
+                fb
+            } else {
+                // When stopped/paused, use first frame (shows initial frame without advancing)
+                let fb = self.frame_buffer.get_first();
+                if let Some(ref f) = fb {
+                    tracing::debug!("FALLBACK (stopped/paused): clock={:.3}, using first frame at PTS {:.3}", current_time, f.pts);
+                }
+                fb
+            };
+            return fallback;
+        }
+
+        if let Some(ref f) = frame {
+            static LAST_FRAME_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now_millis = (current_time * 1000.0) as u64;
+            let last = LAST_FRAME_LOG.load(std::sync::atomic::Ordering::Relaxed);
+            if now_millis > last + 500 {
+                LAST_FRAME_LOG.store(now_millis, std::sync::atomic::Ordering::Relaxed);
+                tracing::debug!("NORMAL: clock={:.3}, got frame at PTS {:.3}, state={:?}", current_time, f.pts, self.state());
+            }
         }
 
         frame
