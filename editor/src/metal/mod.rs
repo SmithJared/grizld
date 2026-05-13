@@ -20,6 +20,7 @@ use std::error::Error;
 use std::fmt;
 
 /// Metal rendering context holding device and command queue.
+#[derive(Clone)]
 pub struct MetalContext {
     device: Retained<objc2::runtime::ProtocolObject<dyn MTLDevice>>,
     command_queue: Retained<objc2::runtime::ProtocolObject<dyn MTLCommandQueue>>,

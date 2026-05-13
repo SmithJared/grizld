@@ -1,49 +1,189 @@
 //! Video renderer using Metal for hardware-accelerated rendering
 //!
 //! This renderer takes hardware-decoded video frames (CVPixelBuffer) and
-//! renders them to a Metal layer using zero-copy texture mapping.
+//! renders them to a Metal layer using zero-copy texture mapping with YUV to RGB conversion.
 
 use super::{MetalContext, MetalError};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_core_video::{
+    kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
     kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, CVPixelBufferGetHeight,
     CVPixelBufferGetWidth, CVPixelBufferGetPixelFormatType,
 };
-use objc2_metal::{MTLDevice, MTLPixelFormat, MTLTexture};
+use objc2_foundation::{ns_string, NSString};
+use objc2_metal::{
+    MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCompileOptions, MTLDevice,
+    MTLDrawable, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType,
+    MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
+    MTLRenderPipelineState, MTLResourceOptions, MTLStoreAction, MTLTexture, MTLVertexDescriptor,
+    MTLVertexFormat, MTLVertexStepFunction,
+};
 use objc2_quartz_core::CAMetalLayer;
 use vp_core::types::{MetalTexture, MetalTextureCacheWrapper, PixelBuffer};
 
-/// Video renderer that converts CVPixelBuffer to Metal textures
+/// Vertex data for full-screen quad
+#[repr(C)]
+struct Vertex {
+    position: [f32; 2],
+    tex_coord: [f32; 2],
+}
+
+/// Video renderer that converts CVPixelBuffer to Metal textures and renders them
 pub struct VideoRenderer {
     texture_cache: MetalTextureCacheWrapper,
-    _context: MetalContext,
+    context: MetalContext,
+    pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
+    vertex_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 impl VideoRenderer {
-    /// Create a new video renderer
+    /// Create a new video renderer with compiled shader and render pipeline
     pub fn new(context: MetalContext) -> Result<Self, MetalError> {
         let device = context.device();
 
         // Create texture cache for zero-copy texture creation
-        let texture_cache = MetalTextureCacheWrapper::new(device)
+        let texture_cache = MetalTextureCacheWrapper::new(device).map_err(|e| {
+            tracing::error!("Failed to create texture cache: {}", e);
+            MetalError::LayerCreation
+        })?;
+
+        // Compile shaders from source
+        let shader_source = include_str!("shaders/yuv_to_rgb.metal");
+        let shader_nsstring = NSString::from_str(shader_source);
+        let options = MTLCompileOptions::new();
+
+        let library = device
+            .newLibraryWithSource_options_error(&shader_nsstring, Some(&options))
             .map_err(|e| {
-                tracing::error!("Failed to create texture cache: {}", e);
+                tracing::error!("Failed to compile shader: {}", e);
                 MetalError::LayerCreation
             })?;
 
-        tracing::info!("Video renderer initialized with texture cache");
+        // Get shader functions
+        let vertex_fn = library
+            .newFunctionWithName(ns_string!("vertex_main"))
+            .ok_or_else(|| {
+                tracing::error!("Missing vertex_main function in shader");
+                MetalError::LayerCreation
+            })?;
+
+        let fragment_fn = library
+            .newFunctionWithName(ns_string!("fragment_main"))
+            .ok_or_else(|| {
+                tracing::error!("Missing fragment_main function in shader");
+                MetalError::LayerCreation
+            })?;
+
+        // Create render pipeline descriptor
+        let pipeline_desc = MTLRenderPipelineDescriptor::new();
+        pipeline_desc.setVertexFunction(Some(&vertex_fn));
+        pipeline_desc.setFragmentFunction(Some(&fragment_fn));
+
+        // Configure color attachment
+        let color_attachments = pipeline_desc.colorAttachments();
+        let attachment0 = unsafe { color_attachments.objectAtIndexedSubscript(0) };
+        attachment0.setPixelFormat(MTLPixelFormat::BGRA8Unorm);
+
+        // Create vertex descriptor
+        let vertex_desc = MTLVertexDescriptor::new();
+
+        // Attribute 0: Position (float2)
+        let attr0 = unsafe { vertex_desc.attributes().objectAtIndexedSubscript(0) };
+        attr0.setFormat(MTLVertexFormat::Float2);
+        unsafe {
+            attr0.setOffset(0);
+            attr0.setBufferIndex(0);
+        }
+
+        // Attribute 1: TexCoord (float2)
+        let attr1 = unsafe { vertex_desc.attributes().objectAtIndexedSubscript(1) };
+        attr1.setFormat(MTLVertexFormat::Float2);
+        unsafe {
+            attr1.setOffset(8); // 2 floats * 4 bytes
+            attr1.setBufferIndex(0);
+        }
+
+        // Buffer layout
+        let layout0 = unsafe { vertex_desc.layouts().objectAtIndexedSubscript(0) };
+        unsafe {
+            layout0.setStride(16); // 4 floats * 4 bytes
+            layout0.setStepRate(1);
+        }
+        layout0.setStepFunction(MTLVertexStepFunction::PerVertex);
+
+        pipeline_desc.setVertexDescriptor(Some(&vertex_desc));
+
+        // Create pipeline state
+        let pipeline_state = device
+            .newRenderPipelineStateWithDescriptor_error(&pipeline_desc)
+            .map_err(|e| {
+                tracing::error!("Failed to create render pipeline: {}", e);
+                MetalError::LayerCreation
+            })?;
+
+        // Create vertex buffer for full-screen quad
+        // Positions in NDC (Normalized Device Coordinates): [-1, 1]
+        // Texture coords: [0, 1] (Y-axis flipped for Metal)
+        let vertices = [
+            // Triangle 1
+            Vertex {
+                position: [-1.0, -1.0],
+                tex_coord: [0.0, 1.0],
+            }, // Bottom-left
+            Vertex {
+                position: [1.0, -1.0],
+                tex_coord: [1.0, 1.0],
+            }, // Bottom-right
+            Vertex {
+                position: [-1.0, 1.0],
+                tex_coord: [0.0, 0.0],
+            }, // Top-left
+            // Triangle 2
+            Vertex {
+                position: [-1.0, 1.0],
+                tex_coord: [0.0, 0.0],
+            }, // Top-left
+            Vertex {
+                position: [1.0, -1.0],
+                tex_coord: [1.0, 1.0],
+            }, // Bottom-right
+            Vertex {
+                position: [1.0, 1.0],
+                tex_coord: [1.0, 0.0],
+            }, // Top-right
+        ];
+
+        let vertex_data = unsafe {
+            std::slice::from_raw_parts(vertices.as_ptr() as *const u8, std::mem::size_of_val(&vertices))
+        };
+
+        let vertex_buffer = unsafe {
+            device
+                .newBufferWithBytes_length_options(
+                    std::ptr::NonNull::new(vertex_data.as_ptr() as *mut _).unwrap(),
+                    vertex_data.len(),
+                    MTLResourceOptions::CPUCacheModeDefaultCache,
+                )
+        }
+        .ok_or_else(|| {
+            tracing::error!("Failed to create vertex buffer");
+            MetalError::LayerCreation
+        })?;
+
+        tracing::info!("Video renderer initialized with YUV shader pipeline");
 
         Ok(Self {
             texture_cache,
-            _context: context,
+            context,
+            pipeline_state,
+            vertex_buffer,
         })
     }
 
     /// Convert a CVPixelBuffer to Metal textures
     ///
     /// Returns (Y texture, UV texture) for YUV 420v format, or None if conversion fails.
-    /// The Y texture is R8Unorm (single channel), UV texture is RG8Unorm (two channels).
     pub fn create_textures_from_pixel_buffer(
         &self,
         pixel_buffer: &PixelBuffer,
@@ -52,10 +192,14 @@ impl VideoRenderer {
         let height = CVPixelBufferGetHeight(pixel_buffer.inner()) as usize;
         let format = CVPixelBufferGetPixelFormatType(pixel_buffer.inner());
 
-        // Check if this is a YUV 420v (NV12) format
-        if format != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
+        // Check if this is a supported YUV 420 format (NV12)
+        // Support both video range (420v) and full range (420f)
+        let is_supported = format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            || format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
+
+        if !is_supported {
             tracing::warn!(
-                "Unsupported pixel format: {} (expected 420v)",
+                "Unsupported pixel format: {} (expected 420v or 420f)",
                 pixel_buffer.pixel_format_name()
             );
             return None;
@@ -74,7 +218,6 @@ impl VideoRenderer {
             .ok()?;
 
         // Create UV plane texture (chroma, plane 1)
-        // UV plane is half resolution (subsampled)
         let uv_texture = self
             .texture_cache
             .create_texture_from_buffer(
@@ -86,24 +229,14 @@ impl VideoRenderer {
             )
             .ok()?;
 
-        tracing::trace!(
-            "Created Metal textures from {}x{} pixel buffer (format: {})",
-            width,
-            height,
-            pixel_buffer.pixel_format_name()
-        );
-
         Some((y_texture, uv_texture))
     }
 
     /// Render a hardware frame to the Metal layer
-    ///
-    /// This is a placeholder that will be implemented in Phase 4 with the YUV shader.
-    /// For now, it just creates the textures to verify zero-copy conversion works.
     pub fn render_frame(
         &self,
         pixel_buffer: &PixelBuffer,
-        _layer: &CAMetalLayer,
+        layer: &CAMetalLayer,
     ) -> Result<(), MetalError> {
         // Convert pixel buffer to Metal textures (zero-copy)
         let Some((y_texture, uv_texture)) = self.create_textures_from_pixel_buffer(pixel_buffer)
@@ -112,18 +245,98 @@ impl VideoRenderer {
             return Err(MetalError::LayerCreation);
         };
 
-        // Verify textures were created
-        if y_texture.texture().is_none() || uv_texture.texture().is_none() {
-            tracing::warn!("Texture extraction failed");
+        // Extract Metal textures
+        let Some(y_mtl_texture) = y_texture.texture() else {
+            tracing::warn!("Failed to extract Y texture");
             return Err(MetalError::LayerCreation);
+        };
+
+        let Some(uv_mtl_texture) = uv_texture.texture() else {
+            tracing::warn!("Failed to extract UV texture");
+            return Err(MetalError::LayerCreation);
+        };
+
+        // Get next drawable from layer
+        let Some(drawable) = layer.nextDrawable() else {
+            tracing::warn!("Failed to get next drawable");
+            return Err(MetalError::LayerCreation);
+        };
+
+        // Create command buffer
+        use objc2::msg_send_id;
+        let command_buffer: Option<Retained<ProtocolObject<dyn MTLCommandBuffer>>> =
+            unsafe { msg_send_id![self.context.command_queue(), commandBuffer] };
+
+        let Some(command_buffer) = command_buffer else {
+            tracing::warn!("Failed to create command buffer");
+            return Err(MetalError::LayerCreation);
+        };
+
+        // Create render pass descriptor
+        let render_pass_desc = MTLRenderPassDescriptor::new();
+        let color_attachment = unsafe {
+            render_pass_desc.colorAttachments().objectAtIndexedSubscript(0)
+        };
+
+        color_attachment.setTexture(Some(&drawable.texture()));
+        color_attachment.setLoadAction(MTLLoadAction::Clear);
+        color_attachment.setStoreAction(MTLStoreAction::Store);
+        color_attachment.setClearColor(MTLClearColor {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            alpha: 1.0,
+        });
+
+        // Create render command encoder
+        let Some(render_encoder) =
+            command_buffer.renderCommandEncoderWithDescriptor(&render_pass_desc)
+        else {
+            tracing::warn!("Failed to create render encoder");
+            return Err(MetalError::LayerCreation);
+        };
+
+        // Set pipeline state
+        render_encoder.setRenderPipelineState(&self.pipeline_state);
+
+        // Set vertex buffer
+        unsafe {
+            render_encoder.setVertexBuffer_offset_atIndex(Some(&self.vertex_buffer), 0, 0);
         }
 
-        // TODO Phase 4: Render YUV textures with shader
-        // For now, just log that we successfully created the textures
+        // Set textures
+        unsafe {
+            render_encoder.setFragmentTexture_atIndex(Some(&y_mtl_texture), 0); // Y texture
+            render_encoder.setFragmentTexture_atIndex(Some(&uv_mtl_texture), 1); // UV texture
+        }
+
+        // Draw full-screen quad (2 triangles = 6 vertices)
+        unsafe {
+            render_encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 6);
+        }
+
+        // End encoding
+        render_encoder.endEncoding();
+
+        // Present drawable
+        use objc2_quartz_core::CAMetalDrawable;
+        let drawable_ref: &ProtocolObject<dyn CAMetalDrawable> = &*drawable;
+        let drawable_as_mtl: &ProtocolObject<dyn MTLDrawable> =
+            unsafe { std::mem::transmute(drawable_ref) };
+        command_buffer.presentDrawable(drawable_as_mtl);
+
+        // Commit command buffer
+        command_buffer.commit();
+
+        // Log first successful frame
         static FIRST_FRAME: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(true);
         if FIRST_FRAME.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            tracing::info!("Successfully created Metal textures from hardware frame (zero-copy)");
+            tracing::info!(
+                "First hardware frame rendered successfully ({}x{}, zero-copy YUV→RGB)",
+                CVPixelBufferGetWidth(pixel_buffer.inner()),
+                CVPixelBufferGetHeight(pixel_buffer.inner())
+            );
         }
 
         Ok(())

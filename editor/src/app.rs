@@ -4,10 +4,10 @@ use vp_core::types::PlaybackState;
 
 use crate::audio::{AudioOutput, SharedAudioState};
 use crate::command::{parse_command, Command, CommandExecutor};
-use crate::renderer::VideoRenderer;
+use crate::renderer::VideoRenderer as SoftwareRenderer;
 
 #[cfg(target_os = "macos")]
-use crate::metal::{LayerManager, LayerConfig};
+use crate::metal::{LayerManager, LayerConfig, VideoRenderer as MetalVideoRenderer};
 
 #[derive(Clone)]
 struct CommandSuggestion {
@@ -19,7 +19,7 @@ struct CommandSuggestion {
 /// Main editor application
 pub struct EditorApp {
     executor: CommandExecutor,
-    renderer: VideoRenderer,
+    renderer: SoftwareRenderer,
 
     // Audio output (must be kept alive)
     audio_output: Option<AudioOutput>,
@@ -28,6 +28,8 @@ pub struct EditorApp {
     // Metal rendering (macOS only)
     #[cfg(target_os = "macos")]
     metal_layer: Option<LayerManager>,
+    #[cfg(target_os = "macos")]
+    metal_video_renderer: Option<MetalVideoRenderer>,
 
     // Command mode state
     command_mode: bool,
@@ -118,11 +120,13 @@ impl EditorApp {
 
         Self {
             executor,
-            renderer: VideoRenderer::new(),
+            renderer: SoftwareRenderer::new(),
             audio_output: None,
             audio_state,
             #[cfg(target_os = "macos")]
             metal_layer,
+            #[cfg(target_os = "macos")]
+            metal_video_renderer: None,
             command_mode: false,
             command_input: String::new(),
             command_history: Vec::new(),
@@ -148,6 +152,18 @@ impl EditorApp {
             match LayerManager::new(frame, LayerConfig::default()) {
                 Ok(layer) => {
                     tracing::info!("Metal layer initialized successfully");
+
+                    // Initialize video renderer with the same Metal context
+                    match MetalVideoRenderer::new(layer.context().clone()) {
+                        Ok(video_renderer) => {
+                            tracing::info!("Metal video renderer initialized successfully");
+                            self.metal_video_renderer = Some(video_renderer);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to initialize Metal video renderer: {}", e);
+                        }
+                    }
+
                     self.metal_layer = Some(layer);
                 }
                 Err(e) => {
@@ -330,25 +346,52 @@ impl EditorApp {
             let get_frame_time = get_frame_start.elapsed().as_secs_f64() * 1000.0;
 
             if let Some(frame) = frame_opt {
-                // Time texture update
-                let texture_start = std::time::Instant::now();
-                self.renderer.update_texture(ui.ctx(), &frame);
-                let texture_time = texture_start.elapsed().as_secs_f64() * 1000.0;
+                // Check if this is a hardware frame (macOS only)
+                #[cfg(target_os = "macos")]
+                let is_hardware = frame.data.is_hardware();
+                #[cfg(not(target_os = "macos"))]
+                let is_hardware = false;
 
-                // Time actual rendering
-                let render_start = std::time::Instant::now();
-                self.renderer.render(ui);
-                let render_time = render_start.elapsed().as_secs_f64() * 1000.0;
+                if !is_hardware {
+                    // Software frame - render with egui
+                    let texture_start = std::time::Instant::now();
+                    self.renderer.update_texture(ui.ctx(), &frame);
+                    let texture_time = texture_start.elapsed().as_secs_f64() * 1000.0;
 
-                // Log every 30 frames
-                static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let render_start = std::time::Instant::now();
+                    self.renderer.render(ui);
+                    let render_time = render_start.elapsed().as_secs_f64() * 1000.0;
 
-                if frame_num % 30 == 0 {
-                    tracing::info!(
-                        "RENDER: get_frame={:.2}ms | texture={:.2}ms | render={:.2}ms",
-                        get_frame_time, texture_time, render_time
-                    );
+                    // Log every 30 frames
+                    static FRAME_COUNT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    if frame_num % 30 == 0 {
+                        tracing::info!(
+                            "RENDER (software): get_frame={:.2}ms | texture={:.2}ms | render={:.2}ms",
+                            get_frame_time, texture_time, render_time
+                        );
+                    }
+                } else {
+                    // Hardware frame - will be rendered via Metal layer in update()
+                    // Just show a placeholder in egui
+                    ui.centered_and_justified(|ui| {
+                        ui.label("Hardware-accelerated video (rendered via Metal)");
+                    });
+
+                    // Log that we have a hardware frame
+                    static HW_FRAME_COUNT: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    let hw_frame_num =
+                        HW_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    if hw_frame_num % 30 == 0 {
+                        tracing::info!(
+                            "RENDER (hardware): get_frame={:.2}ms | frame ready for Metal",
+                            get_frame_time
+                        );
+                    }
                 }
             } else {
                 ui.centered_and_justified(|ui| {
@@ -589,7 +632,7 @@ impl eframe::App for EditorApp {
         self.render_command_palette(ctx);
         let palette_time = palette_start.elapsed().as_secs_f64() * 1000.0;
 
-        // Update Metal layer bounds and render (macOS only)
+        // Update Metal layer bounds and render hardware frames (macOS only)
         #[cfg(target_os = "macos")]
         if let Some(ref layer) = self.metal_layer {
             // Update layer position to match video viewport
@@ -614,8 +657,10 @@ impl eframe::App for EditorApp {
                 layer.set_bounds(x, y, width, height);
 
                 // Log every 60 frames to debug positioning
-                static LAYER_FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let layer_frame_num = LAYER_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                static LAYER_FRAME_COUNT: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let layer_frame_num =
+                    LAYER_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if layer_frame_num % 60 == 0 {
                     tracing::info!(
                         "Metal layer: x={:.1}, y={:.1}, w={:.1}, h={:.1} (logical px, ppp={:.1})",
@@ -624,8 +669,35 @@ impl eframe::App for EditorApp {
                 }
             }
 
-            // Render test color (temporary for testing)
-            layer.render_test_color(0.0, 0.0, 1.0, 1.0); // Blue test screen
+            // Render hardware frame if available
+            if let Some(ref video_renderer) = self.metal_video_renderer {
+                if let Some(player) = self.executor.player() {
+                    if let Some(frame) = player.get_current_frame() {
+                        if frame.data.is_hardware() {
+                            // Extract PixelBuffer from hardware frame
+                            if let vp_core::types::FrameData::Hardware(ref pixel_buffer) = frame.data
+                            {
+                                // Render to Metal layer
+                                if let Err(e) =
+                                    video_renderer.render_frame(pixel_buffer, layer.layer())
+                                {
+                                    tracing::warn!("Failed to render hardware frame: {}", e);
+                                }
+
+                                // Flush texture cache periodically
+                                static FLUSH_COUNT: std::sync::atomic::AtomicU64 =
+                                    std::sync::atomic::AtomicU64::new(0);
+                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                    % 30
+                                    == 0
+                                {
+                                    video_renderer.flush_cache();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Total frame time

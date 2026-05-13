@@ -7,8 +7,9 @@
 
 use objc2::rc::Retained;
 use objc2_core_video::{
-    kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-    CVPixelBuffer, CVPixelBufferGetHeight, CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth,
+    kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+    kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, CVPixelBuffer, CVPixelBufferGetHeight,
+    CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth,
 };
 use std::fmt;
 use std::os::raw::c_void;
@@ -66,7 +67,8 @@ impl PixelBuffer {
 
         // Check known formats
         match format_type {
-            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange => "420v (YUV 2-plane)",
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange => "420v (YUV 2-plane video range)",
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange => "420f (YUV 2-plane full range)",
             kCVPixelFormatType_32BGRA => "BGRA",
             _ => {
                 // Return FourCC string for unknown formats
