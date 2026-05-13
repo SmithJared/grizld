@@ -9,6 +9,10 @@ use crate::renderer::VideoRenderer as SoftwareRenderer;
 #[cfg(target_os = "macos")]
 use crate::metal::{LayerManager, LayerConfig, VideoRenderer as MetalVideoRenderer};
 
+/// Interval for flushing Metal texture cache (every N frames)
+#[cfg(target_os = "macos")]
+const TEXTURE_CACHE_FLUSH_INTERVAL: u64 = 30;
+
 #[derive(Clone)]
 struct CommandSuggestion {
     command: String,
@@ -649,10 +653,10 @@ impl eframe::App for EditorApp {
                                     tracing::warn!("Failed to render hardware frame: {}", e);
                                 }
 
-                                // Flush texture cache periodically (every 30 frames)
+                                // Flush texture cache periodically
                                 static FLUSH_COUNT: std::sync::atomic::AtomicU64 =
                                     std::sync::atomic::AtomicU64::new(0);
-                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 {
+                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % TEXTURE_CACHE_FLUSH_INTERVAL == 0 {
                                     video_renderer.flush_cache();
                                 }
                             }

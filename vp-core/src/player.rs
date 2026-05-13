@@ -15,6 +15,7 @@ use crate::types::{PlaybackState, VideoFrame, PTS};
 const FRAME_BUFFER_CAPACITY: usize = 15; // Reduced for 4K video (15 frames = ~500MB)
 const AUDIO_BUFFER_SECONDS: f64 = 2.0;
 const SAMPLE_RATE: u32 = 48000;
+const FRAME_DROP_THRESHOLD_SECS: f64 = 0.1; // Drop frames more than 100ms late
 
 /// Main video player that orchestrates decoding and playback
 pub struct VideoPlayer {
@@ -327,7 +328,7 @@ fn decode_loop(
 
                                 // Frame dropping: if this frame is already late, drop it
                                 let current_time = clock.current_time();
-                                if clock.state().is_playing() && frame.pts < current_time - 0.1 {
+                                if clock.state().is_playing() && frame.pts < current_time - FRAME_DROP_THRESHOLD_SECS {
                                     tracing::debug!("Dropping late frame: PTS {:.3} < clock {:.3}", frame.pts, current_time);
                                     continue;
                                 }

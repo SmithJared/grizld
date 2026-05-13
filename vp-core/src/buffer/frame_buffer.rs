@@ -131,6 +131,16 @@ impl FrameBuffer {
     }
 }
 
+impl super::Buffer for FrameBuffer {
+    fn clear(&self) {
+        FrameBuffer::clear(self)
+    }
+
+    fn len(&self) -> usize {
+        FrameBuffer::len(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

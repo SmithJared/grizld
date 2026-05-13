@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::types::{AudioSample, PTS};
 
+/// Threshold for considering buffer "nearly full" (90%)
+const NEARLY_FULL_THRESHOLD: f64 = 0.9;
+
 /// Thread-safe ring buffer for audio samples
 ///
 /// Stores decoded audio samples for playback by the CPAL audio thread.
@@ -119,7 +122,7 @@ impl AudioBuffer {
     /// Check if the buffer is nearly full (>90%)
     pub fn is_nearly_full(&self) -> bool {
         let inner = self.inner.lock().unwrap();
-        inner.samples.len() > (inner.capacity_samples * 9 / 10)
+        inner.samples.len() > (inner.capacity_samples as f64 * NEARLY_FULL_THRESHOLD) as usize
     }
 
     /// Get the current PTS
@@ -146,6 +149,16 @@ impl AudioBuffer {
         let inner = self.inner.lock().unwrap();
         let frames = inner.samples.len() / 2; // Stereo
         frames as f64 / inner.sample_rate as f64
+    }
+}
+
+impl super::Buffer for AudioBuffer {
+    fn clear(&self) {
+        AudioBuffer::clear(self)
+    }
+
+    fn len(&self) -> usize {
+        AudioBuffer::len(self)
     }
 }
 

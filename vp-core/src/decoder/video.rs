@@ -11,6 +11,9 @@ use crate::types::PixelBuffer;
 #[cfg(target_os = "macos")]
 use std::os::raw::c_void;
 
+/// Threshold for logging slow decode warnings (milliseconds)
+const SLOW_DECODE_THRESHOLD_MS: f64 = 50.0;
+
 /// Video decoder with hardware acceleration support
 pub struct VideoDecoder {
     decoder: ffmpeg::decoder::Video,
@@ -203,7 +206,7 @@ impl VideoDecoder {
         // Log slow decodes at trace level
         if !frames.is_empty() {
             let total_time = decode_start.elapsed().as_secs_f64() * 1000.0; // ms
-            if total_time > 50.0 {
+            if total_time > SLOW_DECODE_THRESHOLD_MS {
                 let avg_time = total_time / frames.len() as f64;
                 tracing::warn!(
                     "Slow decode: {}x{} took {:.2}ms (packet had {} frames)",
