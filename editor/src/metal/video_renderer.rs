@@ -34,7 +34,6 @@ pub struct VideoRenderer {
     texture_cache: MetalTextureCacheWrapper,
     context: MetalContext,
     pipeline_state: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
-    vertex_buffer: Retained<ProtocolObject<dyn MTLBuffer>>,
 }
 
 impl VideoRenderer {
@@ -122,62 +121,12 @@ impl VideoRenderer {
                 MetalError::LayerCreation
             })?;
 
-        // Create vertex buffer for full-screen quad
-        // Positions in NDC (Normalized Device Coordinates): [-1, 1]
-        // Texture coords: [0, 1] (Y-axis flipped for Metal)
-        let vertices = [
-            // Triangle 1
-            Vertex {
-                position: [-1.0, -1.0],
-                tex_coord: [0.0, 1.0],
-            }, // Bottom-left
-            Vertex {
-                position: [1.0, -1.0],
-                tex_coord: [1.0, 1.0],
-            }, // Bottom-right
-            Vertex {
-                position: [-1.0, 1.0],
-                tex_coord: [0.0, 0.0],
-            }, // Top-left
-            // Triangle 2
-            Vertex {
-                position: [-1.0, 1.0],
-                tex_coord: [0.0, 0.0],
-            }, // Top-left
-            Vertex {
-                position: [1.0, -1.0],
-                tex_coord: [1.0, 1.0],
-            }, // Bottom-right
-            Vertex {
-                position: [1.0, 1.0],
-                tex_coord: [1.0, 0.0],
-            }, // Top-right
-        ];
-
-        let vertex_data = unsafe {
-            std::slice::from_raw_parts(vertices.as_ptr() as *const u8, std::mem::size_of_val(&vertices))
-        };
-
-        let vertex_buffer = unsafe {
-            device
-                .newBufferWithBytes_length_options(
-                    std::ptr::NonNull::new(vertex_data.as_ptr() as *mut _).unwrap(),
-                    vertex_data.len(),
-                    MTLResourceOptions::CPUCacheModeDefaultCache,
-                )
-        }
-        .ok_or_else(|| {
-            tracing::error!("Failed to create vertex buffer");
-            MetalError::LayerCreation
-        })?;
-
         tracing::info!("Video renderer initialized with YUV shader pipeline");
 
         Ok(Self {
             texture_cache,
             context,
             pipeline_state,
-            vertex_buffer,
         })
     }
 
@@ -232,7 +181,61 @@ impl VideoRenderer {
         Some((y_texture, uv_texture))
     }
 
-    /// Render a hardware frame to the Metal layer
+    /// Calculate vertex positions for aspect-ratio-correct rendering
+    ///
+    /// Returns vertex positions in NDC that will letterbox/pillarbox the video
+    fn calculate_aspect_correct_vertices(
+        video_width: f64,
+        video_height: f64,
+        drawable_width: f64,
+        drawable_height: f64,
+    ) -> [Vertex; 6] {
+        let video_aspect = video_width / video_height;
+        let drawable_aspect = drawable_width / drawable_height;
+
+        // Calculate the scale to fit the video within the drawable
+        let (scale_x, scale_y) = if drawable_aspect > video_aspect {
+            // Drawable is wider - pillarbox (black bars on sides)
+            let scale = video_aspect / drawable_aspect;
+            (scale, 1.0)
+        } else {
+            // Drawable is taller - letterbox (black bars on top/bottom)
+            let scale = drawable_aspect / video_aspect;
+            (1.0, scale)
+        };
+
+        // Create vertices with adjusted positions
+        [
+            // Triangle 1
+            Vertex {
+                position: [-scale_x as f32, -scale_y as f32],
+                tex_coord: [0.0, 1.0],
+            }, // Bottom-left
+            Vertex {
+                position: [scale_x as f32, -scale_y as f32],
+                tex_coord: [1.0, 1.0],
+            }, // Bottom-right
+            Vertex {
+                position: [-scale_x as f32, scale_y as f32],
+                tex_coord: [0.0, 0.0],
+            }, // Top-left
+            // Triangle 2
+            Vertex {
+                position: [-scale_x as f32, scale_y as f32],
+                tex_coord: [0.0, 0.0],
+            }, // Top-left
+            Vertex {
+                position: [scale_x as f32, -scale_y as f32],
+                tex_coord: [1.0, 1.0],
+            }, // Bottom-right
+            Vertex {
+                position: [scale_x as f32, scale_y as f32],
+                tex_coord: [1.0, 0.0],
+            }, // Top-right
+        ]
+    }
+
+    /// Render a hardware frame to the Metal layer with correct aspect ratio
     pub fn render_frame(
         &self,
         pixel_buffer: &PixelBuffer,
@@ -261,6 +264,43 @@ impl VideoRenderer {
             tracing::warn!("Failed to get next drawable");
             return Err(MetalError::LayerCreation);
         };
+
+        // Get drawable size for aspect ratio calculation
+        let drawable_size = layer.drawableSize();
+        let drawable_width = drawable_size.width;
+        let drawable_height = drawable_size.height;
+
+        // Get video dimensions
+        let video_width = CVPixelBufferGetWidth(pixel_buffer.inner()) as f64;
+        let video_height = CVPixelBufferGetHeight(pixel_buffer.inner()) as f64;
+
+        // Calculate aspect-ratio-correct vertices
+        let vertices = Self::calculate_aspect_correct_vertices(
+            video_width,
+            video_height,
+            drawable_width,
+            drawable_height,
+        );
+
+        // Create dynamic vertex buffer with aspect-correct vertices
+        let vertex_data = unsafe {
+            std::slice::from_raw_parts(
+                vertices.as_ptr() as *const u8,
+                std::mem::size_of_val(&vertices),
+            )
+        };
+
+        let dynamic_vertex_buffer = unsafe {
+            self.context.device().newBufferWithBytes_length_options(
+                std::ptr::NonNull::new(vertex_data.as_ptr() as *mut _).unwrap(),
+                vertex_data.len(),
+                MTLResourceOptions::CPUCacheModeDefaultCache,
+            )
+        }
+        .ok_or_else(|| {
+            tracing::warn!("Failed to create dynamic vertex buffer");
+            MetalError::LayerCreation
+        })?;
 
         // Create command buffer
         use objc2::msg_send_id;
@@ -299,9 +339,9 @@ impl VideoRenderer {
         // Set pipeline state
         render_encoder.setRenderPipelineState(&self.pipeline_state);
 
-        // Set vertex buffer
+        // Set dynamic vertex buffer (with aspect-correct vertices)
         unsafe {
-            render_encoder.setVertexBuffer_offset_atIndex(Some(&self.vertex_buffer), 0, 0);
+            render_encoder.setVertexBuffer_offset_atIndex(Some(&dynamic_vertex_buffer), 0, 0);
         }
 
         // Set textures
