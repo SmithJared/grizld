@@ -7,6 +7,9 @@ mod buffer_manager;
 mod command;
 mod renderer;
 
+#[cfg(target_os = "macos")]
+mod metal;
+
 use app::EditorApp;
 
 fn main() -> Result<(), eframe::Error> {

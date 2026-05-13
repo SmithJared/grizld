@@ -5,6 +5,16 @@ edition = "2021"
 
 [dependencies]
 ffmpeg-next = { workspace = true }
+ffmpeg-sys-next = { workspace = true }
 crossbeam-channel = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+# objc2 ecosystem (base)
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Hardware decode on macOS (Core Video for CVPixelBuffer)
+objc2-core-video = "0.3"
+objc2-metal = "0.3"

@@ -6,10 +6,15 @@ use ffmpeg_next as ffmpeg;
 use crate::error::VpResult;
 use crate::types::{PixelFormat, VideoFrame};
 
+#[cfg(target_os = "macos")]
+use crate::types::PixelBuffer;
+
+#[cfg(target_os = "macos")]
+use std::os::raw::c_void;
+
 /// Video decoder with hardware acceleration support
 pub struct VideoDecoder {
     decoder: ffmpeg::decoder::Video,
-    scaler: ScalerContext,
     output_format: Pixel,
     width: u32,
     height: u32,
@@ -34,20 +39,6 @@ impl VideoDecoder {
             });
 
         let decoder = decoder_result?;
-        let codec_name = decoder
-            .codec()
-            .map(|c| c.name().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
-        let is_hardware = codec_name.contains("videotoolbox")
-            || codec_name.contains("qsv")
-            || codec_name.contains("nvdec")
-            || codec_name.contains("vaapi");
-
-        tracing::info!(
-            "Video decoder: {} ({})",
-            codec_name,
-            if is_hardware { "HARDWARE" } else { "software" }
-        );
 
         let width = decoder.width();
         let height = decoder.height();
@@ -55,15 +46,15 @@ impl VideoDecoder {
         let output_format = Pixel::RGBA;
 
         // Use FAST_BILINEAR for better performance, especially on 4K
-        let scaler = ScalerContext::get(
-            input_format,
-            width,
-            height,
-            output_format,
-            width,
-            height,
-            Flags::FAST_BILINEAR,
-        )?;
+        // let scaler = ScalerContext::get(
+        //     input_format,
+        //     width,
+        //     height,
+        //     output_format,
+        //     width,
+        //     height,
+        //     Flags::FAST_BILINEAR,
+        // )?;
 
         let time_base = stream.time_base();
         let time_base_f64 = time_base.numerator() as f64 / time_base.denominator() as f64;
@@ -79,7 +70,6 @@ impl VideoDecoder {
 
         Ok(Self {
             decoder,
-            scaler,
             output_format,
             width,
             height,
@@ -92,46 +82,73 @@ impl VideoDecoder {
         codec_id: ffmpeg::codec::Id,
         stream: &ffmpeg::Stream,
     ) -> Result<ffmpeg::decoder::Video, ffmpeg::Error> {
-        // On macOS, try VideoToolbox variants
+        // On macOS, use VideoToolbox via hardware device context
         #[cfg(target_os = "macos")]
         {
-            let hw_codec_name = match codec_id {
-                ffmpeg::codec::Id::H264 => Some("h264_videotoolbox"),
-                ffmpeg::codec::Id::HEVC => Some("hevc_videotoolbox"),
-                _ => None,
-            };
+            use super::hw_accel::{HardwareDeviceContext, HardwareFramesBuilder, VideoDecoderExt};
+            use ffmpeg_sys_next::{AVHWDeviceType, AVPixelFormat};
 
-            if let Some(name) = hw_codec_name {
-                if let Some(codec) = ffmpeg::codec::decoder::find_by_name(name) {
-                    tracing::info!("Found hardware codec: {}", name);
-                    let mut context = ffmpeg::codec::context::Context::new_with_codec(codec);
-                    unsafe {
-                        (*context.as_mut_ptr()).time_base = stream.time_base().into();
-                    }
-                    return context.decoder().video();
+            // Only try hardware acceleration for supported codecs
+            match codec_id {
+                ffmpeg::codec::Id::H264 | ffmpeg::codec::Id::HEVC => {
+                    tracing::info!(
+                        "Attempting VideoToolbox hardware acceleration for {:?}",
+                        codec_id
+                    );
+
+                    // Create hardware device context
+                    let hw_device_ctx =
+                        HardwareDeviceContext::new(AVHWDeviceType::AV_HWDEVICE_TYPE_VIDEOTOOLBOX)
+                            .map_err(|e| {
+                            tracing::warn!("Failed to create hardware device context: {}", e);
+                            ffmpeg::Error::DecoderNotFound
+                        })?;
+
+                    // Get decoder from stream parameters
+                    let parameters = stream.parameters();
+                    let context = ffmpeg::codec::context::Context::from_parameters(parameters)?;
+                    let mut decoder = context.decoder().video()?;
+
+                    let width = decoder.width() as i32;
+                    let height = decoder.height() as i32;
+
+                    // Create hardware frames context
+                    let mut hw_frames_builder = HardwareFramesBuilder::new(&hw_device_ctx)
+                        .map_err(|e| {
+                            tracing::warn!("Failed to create hardware frames builder: {}", e);
+                            ffmpeg::Error::DecoderNotFound
+                        })?;
+
+                    hw_frames_builder
+                        .set_format(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX)
+                        .set_sw_format(AVPixelFormat::AV_PIX_FMT_NV12)
+                        .set_resolution(width, height);
+
+                    let hw_frames_ctx = hw_frames_builder.init().map_err(|e| {
+                        tracing::warn!("Failed to initialize hardware frames context: {}", e);
+                        ffmpeg::Error::DecoderNotFound
+                    })?;
+
+                    // Configure decoder for hardware acceleration
+                    decoder = decoder
+                        .with_hw_device_ctx(hw_device_ctx)
+                        .with_hw_frames_ctx(hw_frames_ctx)
+                        .with_pix_fmt(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX)
+                        .with_hw_format_callback(AVPixelFormat::AV_PIX_FMT_VIDEOTOOLBOX);
+
+                    tracing::info!("VideoToolbox hardware decoder configured successfully");
+                    return Ok(decoder);
                 }
+                _ => {}
             }
         }
 
-        // On Linux, try VAAPI variants
+        // On Linux, try VAAPI (not implemented yet)
         #[cfg(target_os = "linux")]
         {
-            let hw_codec_name = match codec_id {
-                ffmpeg::codec::Id::H264 => Some("h264_vaapi"),
-                ffmpeg::codec::Id::HEVC => Some("hevc_vaapi"),
-                _ => None,
-            };
-
-            if let Some(name) = hw_codec_name {
-                if let Some(codec) = ffmpeg::codec::decoder::find_by_name(name) {
-                    tracing::info!("Found hardware codec: {}", name);
-                    let mut context = ffmpeg::codec::context::Context::new_with_codec(codec);
-                    unsafe {
-                        (*context.as_mut_ptr()).time_base = stream.time_base().into();
-                    }
-                    return context.decoder().video();
-                }
-            }
+            let _ = codec_id;
+            let _ = stream;
+            // TODO: Implement VAAPI hardware acceleration
         }
 
         Err(ffmpeg::Error::DecoderNotFound)
@@ -160,36 +177,41 @@ impl VideoDecoder {
                 0.0
             };
 
-            // Scale and convert to RGBA
-            let mut rgb_frame = AVFrame::empty();
-            if let Err(e) = self.scaler.run(&decoded_frame, &mut rgb_frame) {
-                tracing::warn!("Failed to scale frame: {}", e);
-                continue;
+            let _width = decoded_frame.width();
+            let _height = decoded_frame.height();
+
+            // Check if this is a hardware frame (macOS VideoToolbox)
+            #[cfg(target_os = "macos")]
+            let is_hardware_frame = unsafe {
+                let frame_ptr = decoded_frame.as_ptr();
+                !(*frame_ptr).data[3].is_null()
+            };
+
+            #[cfg(target_os = "macos")]
+            if is_hardware_frame {
+                // Extract CVPixelBuffer from hardware frame
+                let pixel_buffer = unsafe {
+                    let frame_ptr = decoded_frame.as_ptr();
+                    let cv_pixel_buffer_ptr = (*frame_ptr).data[3] as *mut c_void;
+                    PixelBuffer::from_raw_ptr(cv_pixel_buffer_ptr)
+                };
+
+                if let Some(pb) = pixel_buffer {
+                    tracing::trace!(
+                        "Hardware frame decoded: {}x{}, format: {}, pts: {:.3}",
+                        pb.width(),
+                        pb.height(),
+                        pb.pixel_format_name(),
+                        pts
+                    );
+
+                    let frame = VideoFrame::new_hardware(pts, pb);
+                    frames.push(frame);
+                    continue; // Skip software decoding path
+                } else {
+                    tracing::warn!("Failed to extract CVPixelBuffer from hardware frame, falling back to software");
+                }
             }
-
-            // Copy pixel data
-            let data = rgb_frame.data(0);
-            let linesize = rgb_frame.stride(0);
-            let height = rgb_frame.height() as usize;
-            let width = rgb_frame.width() as usize;
-
-            let mut pixel_data = Vec::with_capacity(width * height * 4);
-
-            for y in 0..height {
-                let start = y * linesize;
-                let end = start + (width * 4);
-                pixel_data.extend_from_slice(&data[start..end]);
-            }
-
-            frames.push(VideoFrame::new(
-                pts,
-                pixel_data,
-                self.width,
-                self.height,
-                PixelFormat::Rgba,
-            ));
-
-            tracing::debug!("Decoded video frame at PTS {:.3}", pts);
         }
 
         // Log decode performance with more detail
@@ -227,7 +249,6 @@ impl VideoDecoder {
             let pts = decoded_frame.pts().unwrap_or(0) as f64 * self.time_base;
 
             let mut rgb_frame = AVFrame::empty();
-            self.scaler.run(&decoded_frame, &mut rgb_frame)?;
 
             let data = rgb_frame.data(0);
             let linesize = rgb_frame.stride(0);

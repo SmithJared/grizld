@@ -6,6 +6,9 @@ use crate::audio::{AudioOutput, SharedAudioState};
 use crate::command::{parse_command, Command, CommandExecutor};
 use crate::renderer::VideoRenderer;
 
+#[cfg(target_os = "macos")]
+use crate::metal::{LayerManager, LayerConfig};
+
 #[derive(Clone)]
 struct CommandSuggestion {
     command: String,
@@ -21,6 +24,10 @@ pub struct EditorApp {
     // Audio output (must be kept alive)
     audio_output: Option<AudioOutput>,
     audio_state: SharedAudioState,
+
+    // Metal rendering (macOS only)
+    #[cfg(target_os = "macos")]
+    metal_layer: Option<LayerManager>,
 
     // Command mode state
     command_mode: bool,
@@ -38,7 +45,11 @@ pub struct EditorApp {
 }
 
 impl EditorApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Initialize Metal layer on macOS
+        #[cfg(target_os = "macos")]
+        let metal_layer = Self::initialize_metal_layer(cc);
+
         let command_suggestions = vec![
             CommandSuggestion {
                 command: "open".to_string(),
@@ -110,6 +121,8 @@ impl EditorApp {
             renderer: VideoRenderer::new(),
             audio_output: None,
             audio_state,
+            #[cfg(target_os = "macos")]
+            metal_layer,
             command_mode: false,
             command_input: String::new(),
             command_history: Vec::new(),
@@ -118,6 +131,29 @@ impl EditorApp {
             status_message: "Ready. Press ':' to enter command mode.".to_string(),
             error_message: None,
             should_quit: false,
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn initialize_metal_layer(_cc: &eframe::CreationContext<'_>) -> Option<LayerManager> {
+        // Metal layer will be initialized lazily in the first update() call
+        // where we have access to the Frame with proper window handle
+        tracing::info!("Metal layer initialization deferred to first frame");
+        None
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ensure_metal_layer(&mut self, frame: &eframe::Frame) {
+        if self.metal_layer.is_none() {
+            match LayerManager::new(frame, LayerConfig::default()) {
+                Ok(layer) => {
+                    tracing::info!("Metal layer initialized successfully");
+                    self.metal_layer = Some(layer);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to initialize Metal layer: {}", e);
+                }
+            }
         }
     }
 
@@ -500,8 +536,12 @@ impl EditorApp {
 }
 
 impl eframe::App for EditorApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         let frame_start = std::time::Instant::now();
+
+        // Initialize Metal layer if not already done (macOS only)
+        #[cfg(target_os = "macos")]
+        self.ensure_metal_layer(frame);
 
         // Handle keyboard input
         let keyboard_start = std::time::Instant::now();
@@ -510,17 +550,26 @@ impl eframe::App for EditorApp {
 
         // Main panel
         let ui_start = std::time::Instant::now();
+        #[cfg(target_os = "macos")]
+        let mut viewport_rect_screen: Option<egui::Rect> = None;
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Video viewport (takes most of the space)
                 let viewport_height = ui.available_height() - 60.0; // Reserve space for controls
-                ui.allocate_ui_with_layout(
+                let response = ui.allocate_ui_with_layout(
                     egui::vec2(ui.available_width(), viewport_height),
                     egui::Layout::top_down(egui::Align::Center),
                     |ui| {
                         self.render_video_viewport(ui);
                     },
                 );
+
+                // Store viewport rect for Metal layer positioning (macOS only)
+                #[cfg(target_os = "macos")]
+                {
+                    viewport_rect_screen = Some(response.response.rect);
+                }
 
                 ui.separator();
 
@@ -540,6 +589,45 @@ impl eframe::App for EditorApp {
         self.render_command_palette(ctx);
         let palette_time = palette_start.elapsed().as_secs_f64() * 1000.0;
 
+        // Update Metal layer bounds and render (macOS only)
+        #[cfg(target_os = "macos")]
+        if let Some(ref layer) = self.metal_layer {
+            // Update layer position to match video viewport
+            if let Some(rect) = viewport_rect_screen {
+                // egui uses logical pixels (points), convert to physical pixels
+                let pixels_per_point = ctx.pixels_per_point();
+
+                // egui rect in logical pixels
+                let x_logical = rect.min.x;
+                let y_logical = rect.min.y;
+                let width_logical = rect.width();
+                let height_logical = rect.height();
+
+                // Convert to physical pixels (points on macOS)
+                // Note: We don't multiply by pixels_per_point for macOS layer coordinates
+                // because CALayer works in points, not pixels
+                let x = x_logical as f64;
+                let y = y_logical as f64;
+                let width = width_logical as f64;
+                let height = height_logical as f64;
+
+                layer.set_bounds(x, y, width, height);
+
+                // Log every 60 frames to debug positioning
+                static LAYER_FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let layer_frame_num = LAYER_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if layer_frame_num % 60 == 0 {
+                    tracing::info!(
+                        "Metal layer: x={:.1}, y={:.1}, w={:.1}, h={:.1} (logical px, ppp={:.1})",
+                        x, y, width, height, pixels_per_point
+                    );
+                }
+            }
+
+            // Render test color (temporary for testing)
+            layer.render_test_color(0.0, 0.0, 1.0, 1.0); // Blue test screen
+        }
+
         // Total frame time
         let total_frame_time = frame_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -554,9 +642,13 @@ impl eframe::App for EditorApp {
             );
         }
 
-        // Request continuous repaints for video playback
+        // Request continuous repaints for video playback or Metal layer testing
         if self.executor.has_player() {
             ctx.request_repaint();
+        }
+        #[cfg(target_os = "macos")]
+        if self.metal_layer.is_some() {
+            ctx.request_repaint(); // Keep Metal layer rendering
         }
 
         // Handle quit

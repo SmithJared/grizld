@@ -35,7 +35,16 @@ impl VideoRenderer {
 
             result
         } else {
-            (frame.width, frame.height, frame.data.clone())
+            // Extract pixel data from FrameData enum
+            let pixel_data = match &frame.data {
+                vp_core::types::FrameData::Software { data, .. } => data.clone(),
+                #[cfg(target_os = "macos")]
+                vp_core::types::FrameData::Hardware(_) => {
+                    tracing::warn!("Hardware frame in software renderer");
+                    Vec::new()
+                }
+            };
+            (frame.width, frame.height, pixel_data)
         };
 
         // Convert to ColorImage
@@ -67,6 +76,18 @@ impl VideoRenderer {
 
     /// Downscale a frame using nearest-neighbor sampling
     fn downscale_frame(frame: &VideoFrame) -> (u32, u32, Vec<u8>) {
+        // Extract pixel data from FrameData enum
+        let pixel_data = match &frame.data {
+            vp_core::types::FrameData::Software { data, .. } => data,
+            #[cfg(target_os = "macos")]
+            vp_core::types::FrameData::Hardware(_) => {
+                // Hardware frames should be rendered via Metal, not egui
+                // Return empty data for now
+                tracing::warn!("Attempted to downscale hardware frame in software renderer");
+                return (0, 0, Vec::new());
+            }
+        };
+
         let src_width = frame.width;
         let src_height = frame.height;
 
@@ -95,10 +116,10 @@ impl VideoRenderer {
                 let sx = (tx as f32 * x_ratio) as u32;
 
                 let src_idx = ((sy * src_width + sx) * 4) as usize;
-                downscaled.push(frame.data[src_idx]);     // R
-                downscaled.push(frame.data[src_idx + 1]); // G
-                downscaled.push(frame.data[src_idx + 2]); // B
-                downscaled.push(frame.data[src_idx + 3]); // A
+                downscaled.push(pixel_data[src_idx]);     // R
+                downscaled.push(pixel_data[src_idx + 1]); // G
+                downscaled.push(pixel_data[src_idx + 2]); // B
+                downscaled.push(pixel_data[src_idx + 3]); // A
             }
         }
 

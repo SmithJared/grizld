@@ -1,0 +1,37 @@
+[package]
+name = "vp-core"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core video player library for demuxing, decoding (software + hardware), buffering, and playback"
+build = "build.rs"
+
+[dependencies]
+ffmpeg-next.workspace = true
+ffmpeg-sys-next.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+crossbeam-channel.workspace = true
+video-sys = { path = "../video-sys" }
+cpal = "0.16.0"
+num-rational = "0.4.2"
+num-traits = "0.2.19"
+egui.workspace = true
+
+
+# macOS hardware decoding
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-metal = "0.3.2"
+objc2 = "0.6.3"
+objc2-app-kit = { version = "0.3.2", features = ["NSView", "NSWindow"] }
+objc2-foundation = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-quartz-core = { version = "0.3.2", features = ["CALayer", "CAMetalLayer"] }
+objc2-core-video = "0.3.2"
+
+[dev-dependencies]
+tempfile = "3.0"   # For test files
+pollster = "0.4"   # For async runtime in examples
+env_logger = "0.11" # For logging in examples

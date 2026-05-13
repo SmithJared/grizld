@@ -15,3 +15,16 @@ cpal = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rfd = "0.15"
+
+# objc2 ecosystem (base)
+objc2 = { workspace = true }
+objc2-foundation = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Metal rendering on macOS
+objc2-metal = "0.3"
+objc2-quartz-core = "0.3"
+objc2-app-kit = "0.3"
+objc2-core-foundation = "0.3"
+objc2-core-video = "0.3"
+raw-window-handle = "0.6"
