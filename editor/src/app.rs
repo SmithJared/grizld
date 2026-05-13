@@ -358,40 +358,13 @@ impl EditorApp {
                     self.renderer.update_texture(ui.ctx(), &frame);
                     let texture_time = texture_start.elapsed().as_secs_f64() * 1000.0;
 
-                    let render_start = std::time::Instant::now();
                     self.renderer.render(ui);
-                    let render_time = render_start.elapsed().as_secs_f64() * 1000.0;
-
-                    // Log every 30 frames
-                    static FRAME_COUNT: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(0);
-                    let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                    if frame_num % 30 == 0 {
-                        tracing::info!(
-                            "RENDER (software): get_frame={:.2}ms | texture={:.2}ms | render={:.2}ms",
-                            get_frame_time, texture_time, render_time
-                        );
-                    }
                 } else {
                     // Hardware frame - will be rendered via Metal layer in update()
                     // Just show a placeholder in egui
                     ui.centered_and_justified(|ui| {
                         ui.label("Hardware-accelerated video (rendered via Metal)");
                     });
-
-                    // Log that we have a hardware frame
-                    static HW_FRAME_COUNT: std::sync::atomic::AtomicU64 =
-                        std::sync::atomic::AtomicU64::new(0);
-                    let hw_frame_num =
-                        HW_FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-                    if hw_frame_num % 30 == 0 {
-                        tracing::info!(
-                            "RENDER (hardware): get_frame={:.2}ms | frame ready for Metal",
-                            get_frame_time
-                        );
-                    }
                 }
             } else {
                 ui.centered_and_justified(|ui| {
@@ -580,19 +553,14 @@ impl EditorApp {
 
 impl eframe::App for EditorApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
-        let frame_start = std::time::Instant::now();
-
         // Initialize Metal layer if not already done (macOS only)
         #[cfg(target_os = "macos")]
         self.ensure_metal_layer(frame);
 
         // Handle keyboard input
-        let keyboard_start = std::time::Instant::now();
         self.handle_keyboard_input(ctx);
-        let keyboard_time = keyboard_start.elapsed().as_secs_f64() * 1000.0;
 
         // Main panel
-        let ui_start = std::time::Instant::now();
         #[cfg(target_os = "macos")]
         let mut viewport_rect_screen: Option<egui::Rect> = None;
 
@@ -625,12 +593,9 @@ impl eframe::App for EditorApp {
                 self.render_command_line(ui);
             });
         });
-        let ui_time = ui_start.elapsed().as_secs_f64() * 1000.0;
 
         // Render command palette overlay
-        let palette_start = std::time::Instant::now();
         self.render_command_palette(ctx);
-        let palette_time = palette_start.elapsed().as_secs_f64() * 1000.0;
 
         // Update Metal layer bounds and render hardware frames (macOS only)
         #[cfg(target_os = "macos")]
@@ -684,13 +649,10 @@ impl eframe::App for EditorApp {
                                     tracing::warn!("Failed to render hardware frame: {}", e);
                                 }
 
-                                // Flush texture cache periodically
+                                // Flush texture cache periodically (every 30 frames)
                                 static FLUSH_COUNT: std::sync::atomic::AtomicU64 =
                                     std::sync::atomic::AtomicU64::new(0);
-                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                                    % 30
-                                    == 0
-                                {
+                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 == 0 {
                                     video_renderer.flush_cache();
                                 }
                             }
@@ -698,20 +660,6 @@ impl eframe::App for EditorApp {
                     }
                 }
             }
-        }
-
-        // Total frame time
-        let total_frame_time = frame_start.elapsed().as_secs_f64() * 1000.0;
-
-        // Log frame timing every 30 frames
-        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        if frame_num % 30 == 0 {
-            tracing::info!(
-                "FRAME: total={:.2}ms | keyboard={:.2}ms | ui={:.2}ms | palette={:.2}ms | fps={:.1}",
-                total_frame_time, keyboard_time, ui_time, palette_time, 1000.0 / total_frame_time
-            );
         }
 
         // Request continuous repaints for video playback or Metal layer testing

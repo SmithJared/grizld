@@ -42,7 +42,7 @@ impl SharedAudioState {
 
 pub struct AudioOutput {
     _stream: Stream,
-    pub shared_state: SharedAudioState,
+    _shared_state: SharedAudioState,
 }
 
 impl AudioOutput {
@@ -94,7 +94,7 @@ impl AudioOutput {
 
         Ok(Self {
             _stream: stream,
-            shared_state,
+            _shared_state: shared_state,
         })
     }
 }
@@ -145,26 +145,9 @@ fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
         let mid_pts = pts + (duration * 0.5);
 
         clock.update_from_audio(mid_pts);
-
-        // Log audio playback every second or so
-        static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let now_millis = (pts * 1000.0) as u64;
-        let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
-        if now_millis > last + 1000 {
-            LAST_LOG.store(now_millis, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!("Audio playing at PTS {:.2}s, {}/{} real samples, buffer: {:.2}s",
-                pts, actual_count, output.len(), audio_buffer.buffered_duration());
-        }
+        tracing::trace!("Audio playing at PTS {:.2}s, buffer: {:.2}s", pts, audio_buffer.buffered_duration());
     } else {
-        // No audio data available - buffer underrun
-        // Don't update clock, let it free-run based on elapsed time
-        static LAST_WARN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let now = std::time::Instant::now();
-        let now_millis = now.elapsed().as_millis() as u64;
-        let last = LAST_WARN.load(std::sync::atomic::Ordering::Relaxed);
-        if now_millis > last + 500 {
-            LAST_WARN.store(now_millis, std::sync::atomic::Ordering::Relaxed);
-            tracing::warn!("Audio buffer underrun, buffer duration: {:.2}s", audio_buffer.buffered_duration());
-        }
+        // No audio data available - buffer underrun (keep warning, it's important)
+        tracing::warn!("Audio buffer underrun, buffer duration: {:.2}s", audio_buffer.buffered_duration());
     }
 }

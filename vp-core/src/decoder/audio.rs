@@ -4,8 +4,8 @@ use ffmpeg::software::resampling::context::Context as ResamplerContext;
 use ffmpeg::util::frame::audio::Audio as AVAudioFrame;
 use ffmpeg::ChannelLayout;
 
-use crate::error::{VpError, VpResult};
-use crate::types::{AudioSample, PTS};
+use crate::error::VpResult;
+use crate::types::AudioSample;
 
 /// Audio decoder with resampling support
 pub struct AudioDecoder {
@@ -76,7 +76,7 @@ impl AudioDecoder {
             let mut resampled = AVAudioFrame::empty();
 
             // Run the resampler - it may not produce output immediately (buffering)
-            let delay_result = self.resampler.run(&decoded_frame, &mut resampled);
+            let _delay_result = self.resampler.run(&decoded_frame, &mut resampled);
 
             // Always check if we got output, regardless of delay
             let num_samples = resampled.samples();

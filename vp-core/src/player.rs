@@ -12,7 +12,6 @@ use crate::error::{VpError, VpResult};
 use crate::sync::PlaybackClock;
 use crate::types::{PlaybackState, VideoFrame, PTS};
 
-const CHANNEL_CAPACITY: usize = 64;
 const FRAME_BUFFER_CAPACITY: usize = 15; // Reduced for 4K video (15 frames = ~500MB)
 const AUDIO_BUFFER_SECONDS: f64 = 2.0;
 const SAMPLE_RATE: u32 = 48000;
@@ -21,8 +20,8 @@ const SAMPLE_RATE: u32 = 48000;
 pub struct VideoPlayer {
     // File info
     duration: f64,
-    video_stream_index: usize,
-    audio_stream_index: usize,
+    _video_stream_index: usize,
+    _audio_stream_index: usize,
 
     // Buffers (shared with decode thread)
     frame_buffer: FrameBuffer,
@@ -32,7 +31,7 @@ pub struct VideoPlayer {
     clock: PlaybackClock,
 
     // Track if we've synced to first frame
-    initial_sync_done: Arc<AtomicBool>,
+    _initial_sync_done: Arc<AtomicBool>,
 
     // Threading
     decode_thread: Option<JoinHandle<()>>,
@@ -80,9 +79,9 @@ impl VideoPlayer {
             duration
         );
 
-        // Create decoders
-        let video_decoder = VideoDecoder::new(&video_stream)?;
-        let audio_decoder = AudioDecoder::new(&audio_stream, SAMPLE_RATE)?;
+        // Create decoders (just to validate they can be created)
+        let _video_decoder = VideoDecoder::new(&video_stream)?;
+        let _audio_decoder = AudioDecoder::new(&audio_stream, SAMPLE_RATE)?;
 
         // Create buffers
         let frame_buffer = FrameBuffer::new(FRAME_BUFFER_CAPACITY);
@@ -128,12 +127,12 @@ impl VideoPlayer {
 
         Ok(Self {
             duration,
-            video_stream_index,
-            audio_stream_index,
+            _video_stream_index: video_stream_index,
+            _audio_stream_index: audio_stream_index,
             frame_buffer,
             audio_buffer,
             clock,
-            initial_sync_done,
+            _initial_sync_done: initial_sync_done,
             decode_thread: Some(decode_thread),
             stop_signal,
             command_tx,
@@ -208,54 +207,18 @@ impl VideoPlayer {
         let current_time = self.current_time();
         let frame = self.frame_buffer.get_frame_at(current_time);
 
-        // Log periodically for debugging
-        static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let now_millis = (current_time * 1000.0) as u64;
-        let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
-        if now_millis > last + 1000 {
-            LAST_LOG.store(now_millis, std::sync::atomic::Ordering::Relaxed);
-            let (frame_count, audio_duration) = self.buffer_stats();
-            if let Some(range) = self.frame_buffer.pts_range() {
-                tracing::info!(
-                    "Playback: clock={:.2}s, frame_buf={}f [{:.2}s-{:.2}s], audio_buf={:.2}s, state={:?}",
-                    current_time, frame_count, range.0, range.1, audio_duration, self.state()
-                );
-            } else {
-                tracing::info!(
-                    "Playback: clock={:.2}s, frame_buf={}f [empty], audio_buf={:.2}s, state={:?}",
-                    current_time, frame_count, audio_duration, self.state()
-                );
-            }
-        }
-
         // If we can't find a frame at current time, use appropriate fallback
         if frame.is_none() && !self.frame_buffer.is_empty() {
             let fallback = if self.state().is_playing() {
                 // When playing, use latest frame (helps with videos that don't start at PTS 0.0)
                 let fb = self.frame_buffer.get_latest();
-                if let Some(ref f) = fb {
-                    tracing::debug!("FALLBACK (playing): clock={:.3}, using latest frame at PTS {:.3}", current_time, f.pts);
-                }
+                tracing::trace!("Fallback (playing): using latest frame");
                 fb
             } else {
-                // When stopped/paused, use first frame (shows initial frame without advancing)
-                let fb = self.frame_buffer.get_first();
-                if let Some(ref f) = fb {
-                    tracing::debug!("FALLBACK (stopped/paused): clock={:.3}, using first frame at PTS {:.3}", current_time, f.pts);
-                }
-                fb
+                // When stopped/paused, use frame closest to current time to freeze properly
+                self.frame_buffer.get_frame_closest(current_time)
             };
             return fallback;
-        }
-
-        if let Some(ref f) = frame {
-            static LAST_FRAME_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let now_millis = (current_time * 1000.0) as u64;
-            let last = LAST_FRAME_LOG.load(std::sync::atomic::Ordering::Relaxed);
-            if now_millis > last + 500 {
-                LAST_FRAME_LOG.store(now_millis, std::sync::atomic::Ordering::Relaxed);
-                tracing::debug!("NORMAL: clock={:.3}, got frame at PTS {:.3}, state={:?}", current_time, f.pts, self.state());
-            }
         }
 
         frame
@@ -355,8 +318,10 @@ fn decode_loop(
                             for frame in frames {
                                 // Sync clock to first frame on initial load
                                 if !initial_sync_done.load(Ordering::Relaxed) && frame_buffer.is_empty() {
-                                    tracing::info!("Initial sync: setting clock to first frame PTS {:.3}", frame.pts);
+                                    tracing::info!("Initial sync: setting clock and audio buffer to first frame PTS {:.3}", frame.pts);
                                     clock.seek(frame.pts);
+                                    // Also sync audio buffer to ensure A/V alignment from the start
+                                    audio_buffer.reset(frame.pts);
                                     initial_sync_done.store(true, Ordering::Relaxed);
                                 }
 

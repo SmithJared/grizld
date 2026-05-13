@@ -1,5 +1,4 @@
 use ffmpeg::format::Pixel;
-use ffmpeg::software::scaling::{context::Context as ScalerContext, flag::Flags};
 use ffmpeg::util::frame::video::Video as AVFrame;
 use ffmpeg_next as ffmpeg;
 
@@ -15,7 +14,6 @@ use std::os::raw::c_void;
 /// Video decoder with hardware acceleration support
 pub struct VideoDecoder {
     decoder: ffmpeg::decoder::Video,
-    output_format: Pixel,
     width: u32,
     height: u32,
     time_base: f64,
@@ -45,17 +43,6 @@ impl VideoDecoder {
         let input_format = decoder.format();
         let output_format = Pixel::RGBA;
 
-        // Use FAST_BILINEAR for better performance, especially on 4K
-        // let scaler = ScalerContext::get(
-        //     input_format,
-        //     width,
-        //     height,
-        //     output_format,
-        //     width,
-        //     height,
-        //     Flags::FAST_BILINEAR,
-        // )?;
-
         let time_base = stream.time_base();
         let time_base_f64 = time_base.numerator() as f64 / time_base.denominator() as f64;
 
@@ -70,7 +57,6 @@ impl VideoDecoder {
 
         Ok(Self {
             decoder,
-            output_format,
             width,
             height,
             time_base: time_base_f64,
@@ -214,23 +200,14 @@ impl VideoDecoder {
             }
         }
 
-        // Log decode performance with more detail
+        // Log slow decodes at trace level
         if !frames.is_empty() {
             let total_time = decode_start.elapsed().as_secs_f64() * 1000.0; // ms
-            let avg_time = total_time / frames.len() as f64;
-
-            // Log every frame decode time
-            static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-            if frame_num % 30 == 0 {
-                // Log every 30 frames (roughly once per second at 30fps)
-                tracing::info!(
-                    "DECODE: {}x{} frame took {:.2}ms (packet had {} frames)",
-                    self.width,
-                    self.height,
-                    avg_time,
-                    frames.len()
+            if total_time > 50.0 {
+                let avg_time = total_time / frames.len() as f64;
+                tracing::warn!(
+                    "Slow decode: {}x{} took {:.2}ms (packet had {} frames)",
+                    self.width, self.height, avg_time, frames.len()
                 );
             }
         }
@@ -245,30 +222,34 @@ impl VideoDecoder {
         let mut frames = Vec::new();
         let mut decoded_frame = AVFrame::empty();
 
+        // Process remaining frames in decoder
         while self.decoder.receive_frame(&mut decoded_frame).is_ok() {
             let pts = decoded_frame.pts().unwrap_or(0) as f64 * self.time_base;
 
-            let mut rgb_frame = AVFrame::empty();
+            // Handle hardware frames on macOS
+            #[cfg(target_os = "macos")]
+            {
+                let is_hardware_frame = unsafe {
+                    let frame_ptr = decoded_frame.as_ptr();
+                    !(*frame_ptr).data[3].is_null()
+                };
 
-            let data = rgb_frame.data(0);
-            let linesize = rgb_frame.stride(0);
-            let height = rgb_frame.height() as usize;
-            let width = rgb_frame.width() as usize;
+                if is_hardware_frame {
+                    let pixel_buffer = unsafe {
+                        let frame_ptr = decoded_frame.as_ptr();
+                        let cv_pixel_buffer_ptr = (*frame_ptr).data[3] as *mut c_void;
+                        PixelBuffer::from_raw_ptr(cv_pixel_buffer_ptr)
+                    };
 
-            let mut pixel_data = Vec::with_capacity(width * height * 4);
-            for y in 0..height {
-                let start = y * linesize;
-                let end = start + (width * 4);
-                pixel_data.extend_from_slice(&data[start..end]);
+                    if let Some(pb) = pixel_buffer {
+                        frames.push(VideoFrame::new_hardware(pts, pb));
+                        continue;
+                    }
+                }
             }
 
-            frames.push(VideoFrame::new(
-                pts,
-                pixel_data,
-                self.width,
-                self.height,
-                PixelFormat::Rgba,
-            ));
+            // Software decoding path would go here but is not currently implemented
+            tracing::warn!("Software frame in flush() - not implemented");
         }
 
         Ok(frames)

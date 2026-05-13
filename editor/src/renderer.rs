@@ -17,20 +17,13 @@ impl VideoRenderer {
 
     /// Update the texture with a new frame
     pub fn update_texture(&mut self, ctx: &egui::Context, frame: &VideoFrame) {
-        let start = std::time::Instant::now();
-
         // Downscale if needed
         let (width, height, data) = if frame.width > MAX_TEXTURE_WIDTH || frame.height > MAX_TEXTURE_HEIGHT {
-            let downscale_start = std::time::Instant::now();
             let result = Self::downscale_frame(frame);
-            let downscale_time = downscale_start.elapsed().as_secs_f64() * 1000.0;
 
             static LOG_DOWNSCALE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
             if LOG_DOWNSCALE.swap(false, std::sync::atomic::Ordering::Relaxed) {
-                tracing::info!(
-                    "Downscaling {}x{} → {}x{} (took {:.2}ms)",
-                    frame.width, frame.height, result.0, result.1, downscale_time
-                );
+                tracing::info!("Downscaling {}x{} → {}x{}", frame.width, frame.height, result.0, result.1);
             }
 
             result
@@ -48,30 +41,10 @@ impl VideoRenderer {
         };
 
         // Convert to ColorImage
-        let image_start = std::time::Instant::now();
-        let image = ColorImage::from_rgba_unmultiplied(
-            [width as _, height as _],
-            &data,
-        );
-        let image_time = image_start.elapsed().as_secs_f64() * 1000.0;
+        let image = ColorImage::from_rgba_unmultiplied([width as _, height as _], &data);
 
         // Upload to GPU
-        let upload_start = std::time::Instant::now();
         self.texture = Some(ctx.load_texture("video_frame", image, TextureOptions::LINEAR));
-        let upload_time = upload_start.elapsed().as_secs_f64() * 1000.0;
-
-        let total_time = start.elapsed().as_secs_f64() * 1000.0;
-
-        // Log every 30 frames
-        static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        if frame_num % 30 == 0 {
-            tracing::info!(
-                "TEXTURE: {}x{} | image={:.2}ms | upload={:.2}ms | total={:.2}ms",
-                width, height, image_time, upload_time, total_time
-            );
-        }
     }
 
     /// Downscale a frame using nearest-neighbor sampling

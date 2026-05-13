@@ -39,21 +39,27 @@ impl AudioBuffer {
         let mut inner = self.inner.lock().unwrap();
 
         let sample_count = audio.data.len();
-        let mut dropped = 0;
 
         // Check if buffer is nearly full - if so, reject the entire sample
         // This prevents PTS discontinuities from dropping samples in the middle
         let would_overflow = inner.samples.len() + sample_count > inner.capacity_samples;
         if would_overflow {
+            // CRITICAL: Update PTS even when rejecting to maintain clock continuity
+            // Calculate the duration of the rejected samples and advance PTS accordingly
+            let frames_in_sample = sample_count / 2; // Stereo
+            let sample_duration = frames_in_sample as f64 / inner.sample_rate as f64;
+            inner.current_pts = audio.pts + sample_duration;
+
             tracing::warn!(
-                "Audio buffer nearly full ({:.2}s), rejecting new samples at PTS {:.3}",
+                "Audio buffer nearly full ({:.2}s), rejecting new samples at PTS {:.3}, advancing PTS to {:.3}",
                 inner.samples.len() as f64 / (inner.sample_rate as f64 * 2.0),
-                audio.pts
+                audio.pts,
+                inner.current_pts
             );
             return;
         }
 
-        // Update PTS to the start of this sample (only when not dropping)
+        // Update PTS to the start of this sample
         inner.current_pts = audio.pts;
 
         for sample in audio.data {

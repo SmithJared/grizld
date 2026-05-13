@@ -13,7 +13,7 @@ pub use video_renderer::VideoRenderer;
 
 use objc2::rc::Retained;
 use objc2_metal::{
-    MTLDevice, MTLCommandQueue, MTLPixelFormat,
+    MTLDevice, MTLCommandQueue,
     MTLCreateSystemDefaultDevice,
 };
 use std::error::Error;

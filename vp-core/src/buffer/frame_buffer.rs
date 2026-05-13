@@ -109,6 +109,26 @@ impl FrameBuffer {
             Some((min_pts, max_pts))
         }
     }
+
+    /// Get the frame closest to the target PTS
+    ///
+    /// Prefers frames with PTS <= target, but will return the earliest frame
+    /// if target is before all frames in the buffer.
+    pub fn get_frame_closest(&self, target_pts: PTS) -> Option<VideoFrame> {
+        let inner = self.inner.lock().unwrap();
+
+        if inner.frames.is_empty() {
+            return None;
+        }
+
+        // Try to find exact or closest frame before target
+        if let Some(frame) = inner.frames.iter().rev().find(|f| f.pts <= target_pts).cloned() {
+            return Some(frame);
+        }
+
+        // If target is before all frames, return the first frame
+        inner.frames.front().cloned()
+    }
 }
 
 #[cfg(test)]

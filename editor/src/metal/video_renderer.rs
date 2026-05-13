@@ -13,10 +13,10 @@ use objc2_core_video::{
 };
 use objc2_foundation::{ns_string, NSString};
 use objc2_metal::{
-    MTLBuffer, MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCompileOptions, MTLDevice,
+    MTLClearColor, MTLCommandBuffer, MTLCommandEncoder, MTLCompileOptions, MTLDevice,
     MTLDrawable, MTLLibrary, MTLLoadAction, MTLPixelFormat, MTLPrimitiveType,
     MTLRenderCommandEncoder, MTLRenderPassDescriptor, MTLRenderPipelineDescriptor,
-    MTLRenderPipelineState, MTLResourceOptions, MTLStoreAction, MTLTexture, MTLVertexDescriptor,
+    MTLRenderPipelineState, MTLResourceOptions, MTLStoreAction, MTLVertexDescriptor,
     MTLVertexFormat, MTLVertexStepFunction,
 };
 use objc2_quartz_core::CAMetalLayer;

@@ -4,15 +4,13 @@ use super::{MetalContext, MetalError};
 use objc2::rc::Retained;
 use objc2_app_kit::NSView;
 use objc2_core_foundation::{CGRect, CGSize, CGPoint};
-use objc2_foundation::MainThreadMarker;
 use objc2_metal::{
-    MTLDevice, MTLPixelFormat, MTLClearColor,
-    MTLCommandBuffer, MTLCommandEncoder, MTLRenderCommandEncoder,
+    MTLPixelFormat, MTLClearColor,
+    MTLCommandBuffer, MTLCommandEncoder,
     MTLDrawable,
 };
-use objc2_quartz_core::{CALayer, CAMetalDrawable, CAMetalLayer};
+use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::ptr::NonNull;
 
 /// Configuration for the Metal layer.
 #[derive(Debug, Clone)]
@@ -68,9 +66,9 @@ impl LayerManager {
             layer.setFramebufferOnly(config.framebuffer_only);
             layer.setDisplaySyncEnabled(config.display_sync_enabled);
 
-            // Set semi-transparent for testing (will be opaque for video later)
-            layer.setOpaque(false);
-            layer.setOpacity(0.7); // 70% opacity to see egui underneath
+            // Set fully opaque for production video rendering
+            layer.setOpaque(true);
+            layer.setOpacity(1.0);
 
             // Add as sublayer instead of replacing the view's layer
             // This allows it to coexist with eframe's rendering
