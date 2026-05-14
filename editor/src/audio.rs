@@ -148,7 +148,8 @@ fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
         let mid_pts = pts + (duration * 0.5);
 
         clock.update_from_audio(mid_pts);
-        tracing::trace!("Audio playing at PTS {:.2}s", pts);
+        tracing::debug!("🔊 Audio callback: pts={:.3}, mid_pts={:.3}, clock_now={:.3}",
+            pts, mid_pts, clock.current_time());
     } else {
         // No audio data available - buffer underrun (keep warning, it's important)
         tracing::warn!("Audio buffer underrun",);

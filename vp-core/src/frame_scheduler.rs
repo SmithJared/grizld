@@ -129,6 +129,11 @@ impl FrameScheduler {
         // Get frame for current time
         let frame = self.frame_cache.request_frame(current_time);
 
+        if let Some(ref f) = frame {
+            tracing::debug!("🎬 FrameScheduler: returning frame pts={:.3}, clock={:.3}, diff={:.3}",
+                f.pts, current_time, f.pts - current_time);
+        }
+
         // Trigger video worker if cache needs frames
         if self.frame_cache.needs_refill() {
             let frames_to_request = self.frame_cache.frames_needed().max(5);

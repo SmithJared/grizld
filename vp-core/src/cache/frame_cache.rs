@@ -86,25 +86,58 @@ impl FrameCache {
 
     /// Request the frame for playback.
     ///
-    /// Behavior:
-    /// - Finds latest frame with PTS <= target_pts
-    /// - Removes it from ahead cache
-    /// - Moves it into behind cache
-    /// - Returns cloned frame
+    /// Behavior (idempotent):
+    /// - If the last frame in behind cache is still appropriate (PTS <= target_pts),
+    ///   return it again without consuming a new frame
+    /// - Otherwise, find the latest frame in ahead with PTS <= target_pts
+    /// - Move all frames up to and including that frame from ahead to behind
+    /// - Return cloned frame
     ///
-    /// This creates a true playback progression model.
+    /// This ensures calling request_frame() multiple times at the same playback
+    /// position returns the same frame without draining the ahead cache.
     pub fn request_frame(&self, target_pts: PTS) -> Option<VideoFrame> {
-        // TODO: If the the returned frame is not the first one on the list then move all frames in
-        // front of it to the behind cache
         let mut inner = self.inner.lock().unwrap();
 
+        // Check if we already have a frame in behind cache that's still valid
+        if let Some(current_frame) = inner.behind.back() {
+            // If the current frame is still appropriate for target_pts, return it again
+            // We need to check if there's a frame in ahead that would be better
+            if let Some(next_frame) = inner.ahead.front() {
+                // Only advance if the next frame's PTS is <= target_pts
+                if next_frame.pts <= target_pts {
+                    // Need to advance to next frame
+                } else {
+                    // Current frame is still the best match, return it
+                    tracing::trace!(
+                        "📦 FrameCache: request_frame({:.3}) -> returning current frame {:.3} (no advance needed)",
+                        target_pts,
+                        current_frame.pts
+                    );
+                    return Some(current_frame.clone());
+                }
+            } else {
+                // No more frames ahead, keep returning current
+                tracing::trace!(
+                    "📦 FrameCache: request_frame({:.3}) -> returning current frame {:.3} (no ahead frames)",
+                    target_pts,
+                    current_frame.pts
+                );
+                return Some(current_frame.clone());
+            }
+        }
+
+        // Need to pull a new frame from ahead cache
         let index = inner.ahead.iter().rposition(|f| f.pts <= target_pts)?;
 
-        let frame = inner.ahead.remove(index)?;
+        // Move all frames up to and including the target index from ahead to behind
+        for _ in 0..=index {
+            if let Some(frame) = inner.ahead.pop_front() {
+                inner.behind.push_back(frame);
+            }
+        }
 
-        let cloned = frame.clone();
-
-        inner.behind.push_back(frame);
+        // Get the frame we just moved (last in behind)
+        let frame = inner.behind.back()?.clone();
 
         // Hard-cap behind cache
         while inner.behind.len() > inner.behind_hard_capacity {
@@ -112,14 +145,14 @@ impl FrameCache {
         }
 
         tracing::trace!(
-            "📦 FrameCache: request_frame({:.3}) -> moved frame {:.3} ahead->behind (ahead={}, behind={})",
+            "📦 FrameCache: request_frame({:.3}) -> advanced to frame {:.3} (ahead={}, behind={})",
             target_pts,
-            cloned.pts,
+            frame.pts,
             inner.ahead.len(),
             inner.behind.len()
         );
 
-        Some(cloned)
+        Some(frame)
     }
 
     // =========================================================

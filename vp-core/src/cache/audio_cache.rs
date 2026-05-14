@@ -44,8 +44,11 @@ struct AudioCacheInner {
     /// Hard limit for behind cache
     behind_hard_capacity_samples: usize,
 
-    /// Playback clock
-    current_pts: PTS,
+    /// Current playback PTS (PTS of samples being played now)
+    current_playback_pts: PTS,
+
+    /// PTS of the most recently decoded sample (end of ahead buffer)
+    newest_decoded_pts: PTS,
 
     sample_rate: u32,
 }
@@ -74,7 +77,8 @@ impl AudioCache {
                 ahead_soft_capacity_samples,
                 behind_hard_capacity_samples,
 
-                current_pts: 0.0,
+                current_playback_pts: 0.0,
+                newest_decoded_pts: 0.0,
                 sample_rate,
             })),
         }
@@ -94,20 +98,25 @@ impl AudioCache {
 
         let len_before = inner.ahead.len();
 
-        // Update playback clock to newest decoded audio
-        inner.current_pts = audio.pts;
+        // If buffer was empty, this is the first sample - set playback PTS
+        if inner.ahead.is_empty() {
+            inner.current_playback_pts = audio.pts;
+        }
+
+        // Track the PTS of the newest decoded audio (end of buffer)
+        inner.newest_decoded_pts = audio.pts;
 
         for sample in audio.data {
             inner.ahead.push_back(sample);
         }
 
         tracing::debug!(
-            "🔊 AudioCache: pushed {} samples at PTS {:.3} (ahead {} -> {}, behind={})",
+            "🔊 AudioCache: pushed {} samples at PTS {:.3} (ahead {} -> {}, playback_pts={:.3})",
             sample_count,
             audio.pts,
             len_before,
             inner.ahead.len(),
-            inner.behind.len(),
+            inner.current_playback_pts,
         );
     }
 
@@ -157,21 +166,24 @@ impl AudioCache {
 
         let time_consumed = frames_consumed as f64 / inner.sample_rate as f64;
 
-        let current_pts = inner.current_pts;
+        // Return the PTS of the audio being played NOW (start of this buffer)
+        let playback_pts = inner.current_playback_pts;
 
+        // Advance playback PTS by the time consumed
         if available > 0 {
-            inner.current_pts += time_consumed;
+            inner.current_playback_pts += time_consumed;
         }
 
         tracing::trace!(
-            "🔊 AudioCache: pop({}) -> actual={} ahead={} behind={}",
+            "🔊 AudioCache: pop({}) -> actual={}, pts={:.3}, ahead={}, behind={}",
             count,
             available,
+            playback_pts,
             inner.ahead.len(),
             inner.behind.len(),
         );
 
-        (output, current_pts, available)
+        (output, playback_pts, available)
     }
 
     // =========================================================
@@ -194,7 +206,7 @@ impl AudioCache {
 
     pub fn current_pts(&self) -> PTS {
         let inner = self.inner.lock().unwrap();
-        inner.current_pts
+        inner.current_playback_pts
     }
 
     // =========================================================
@@ -309,7 +321,8 @@ impl AudioCache {
         inner.ahead.clear();
         inner.behind.clear();
 
-        inner.current_pts = pts;
+        inner.current_playback_pts = pts;
+        inner.newest_decoded_pts = pts;
     }
 
     /// Aggressively trim behind cache.
@@ -341,7 +354,8 @@ impl Default for AudioCache {
                 ahead_soft_capacity_samples,
                 behind_hard_capacity_samples,
 
-                current_pts: 0.0,
+                current_playback_pts: 0.0,
+                newest_decoded_pts: 0.0,
                 sample_rate: SAMPLE_RATE,
             })),
         }
