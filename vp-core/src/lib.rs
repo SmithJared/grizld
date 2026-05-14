@@ -7,9 +7,11 @@ pub mod sync;
 pub mod buffer;
 pub mod decoder;
 pub mod player;
+pub mod pull_coordinator;
 
 // Re-export main types
 pub use error::{VpError, VpResult};
 pub use types::{VideoFrame, AudioSample, PlaybackState, PTS};
-pub use sync::PlaybackClock;
+pub use sync::{PlaybackClock, LoadingState};
 pub use player::VideoPlayer;
+pub use pull_coordinator::{PullCoordinator, CoordinatorCommand};

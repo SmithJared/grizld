@@ -1,7 +1,37 @@
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::types::{PlaybackState, PTS};
+
+/// Loading state for async operations (seeks, buffering)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadingState {
+    /// Buffers ready, playback can proceed normally
+    Ready,
+    /// Seek in progress, buffers being refilled
+    Seeking,
+    /// Playing but buffers critically low, need urgent refill
+    Buffering,
+}
+
+impl LoadingState {
+    fn to_u8(self) -> u8 {
+        match self {
+            LoadingState::Ready => 0,
+            LoadingState::Seeking => 1,
+            LoadingState::Buffering => 2,
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => LoadingState::Seeking,
+            2 => LoadingState::Buffering,
+            _ => LoadingState::Ready,
+        }
+    }
+}
 
 /// Audio-driven playback clock for A/V synchronization
 ///
@@ -11,6 +41,8 @@ use crate::types::{PlaybackState, PTS};
 #[derive(Clone)]
 pub struct PlaybackClock {
     state: Arc<Mutex<ClockState>>,
+    /// Loading state for UI feedback (lock-free for fast access)
+    loading_state: Arc<AtomicU8>,
 }
 
 struct ClockState {
@@ -33,6 +65,7 @@ impl PlaybackClock {
                 audio_base_pts: 0.0,
                 audio_start_time: Instant::now(),
             })),
+            loading_state: Arc::new(AtomicU8::new(LoadingState::Ready.to_u8())),
         }
     }
 
@@ -130,6 +163,20 @@ impl PlaybackClock {
         state.audio_base_pts = 0.0;
         state.audio_start_time = Instant::now();
         state.state = PlaybackState::Stopped;
+        self.loading_state.store(LoadingState::Ready.to_u8(), Ordering::Relaxed);
+    }
+
+    /// Get the current loading state
+    pub fn loading_state(&self) -> LoadingState {
+        LoadingState::from_u8(self.loading_state.load(Ordering::Relaxed))
+    }
+
+    /// Set the loading state
+    ///
+    /// Used by pull coordinator to signal seeking/buffering state to UI
+    pub fn set_loading_state(&self, state: LoadingState) {
+        tracing::debug!("Loading state: {:?}", state);
+        self.loading_state.store(state.to_u8(), Ordering::Relaxed);
     }
 }
 

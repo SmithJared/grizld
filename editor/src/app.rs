@@ -344,10 +344,13 @@ impl EditorApp {
 
     fn render_video_viewport(&mut self, ui: &mut egui::Ui) {
         if let Some(player) = self.executor.player() {
+            // Check loading state for overlay
+            let loading_state = player.loading_state();
+
             // Time how long it takes to get the current frame
             let get_frame_start = std::time::Instant::now();
             let frame_opt = player.get_current_frame();
-            let get_frame_time = get_frame_start.elapsed().as_secs_f64() * 1000.0;
+            let _get_frame_time = get_frame_start.elapsed().as_secs_f64() * 1000.0;
 
             if let Some(frame) = frame_opt {
                 let player_state = player.state();
@@ -392,6 +395,65 @@ impl EditorApp {
                 ui.centered_and_justified(|ui| {
                     ui.label("Buffering...");
                 });
+            }
+
+            // Show loading indicator overlay if seeking or buffering
+            match loading_state {
+                vp_core::LoadingState::Seeking => {
+                    // Show seeking indicator overlay
+                    let painter = ui.painter();
+                    let rect = ui.available_rect_before_wrap();
+                    let center = rect.center();
+
+                    // Semi-transparent dark overlay
+                    painter.rect_filled(
+                        rect,
+                        egui::Rounding::ZERO,
+                        egui::Color32::from_black_alpha(128),
+                    );
+
+                    // Seeking text
+                    let galley = painter.layout_no_wrap(
+                        "⏳ Seeking...".to_string(),
+                        egui::FontId::proportional(24.0),
+                        egui::Color32::WHITE,
+                    );
+
+                    painter.galley(
+                        egui::pos2(
+                            center.x - galley.size().x / 2.0,
+                            center.y - galley.size().y / 2.0,
+                        ),
+                        galley,
+                        egui::Color32::WHITE,
+                    );
+                }
+                vp_core::LoadingState::Buffering => {
+                    // Show buffering indicator
+                    ui.ctx().request_repaint(); // Keep animating
+
+                    let painter = ui.painter();
+                    let rect = ui.available_rect_before_wrap();
+                    let center = rect.center();
+
+                    let galley = painter.layout_no_wrap(
+                        "⏳ Buffering...".to_string(),
+                        egui::FontId::proportional(24.0),
+                        egui::Color32::WHITE,
+                    );
+
+                    painter.galley(
+                        egui::pos2(
+                            center.x - galley.size().x / 2.0,
+                            center.y - galley.size().y / 2.0,
+                        ),
+                        galley,
+                        egui::Color32::WHITE,
+                    );
+                }
+                vp_core::LoadingState::Ready => {
+                    // No overlay needed
+                }
             }
         } else {
             ui.centered_and_justified(|ui| {

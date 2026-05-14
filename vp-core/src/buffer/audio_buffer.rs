@@ -150,6 +150,38 @@ impl AudioBuffer {
         let frames = inner.samples.len() / 2; // Stereo
         frames as f64 / inner.sample_rate as f64
     }
+
+    // === Buffer Health Metrics for Pull-Based Decoding ===
+
+    /// Check if buffer needs refilling (< 1.0 second threshold)
+    ///
+    /// Returns true when buffer has less than 1.0 second of audio remaining.
+    /// This is the trigger point for pull-based decode to start refilling.
+    pub fn needs_refill(&self) -> bool {
+        self.buffered_duration() < 1.0
+    }
+
+    /// Get the duration needed to fill the buffer to capacity
+    pub fn duration_needed(&self) -> std::time::Duration {
+        let inner = self.inner.lock().unwrap();
+        let capacity_duration = inner.capacity_samples as f64 / (inner.sample_rate as f64 * 2.0);
+        let buffered = self.buffered_duration();
+        let needed = (capacity_duration - buffered).max(0.0);
+        std::time::Duration::from_secs_f64(needed)
+    }
+
+    /// Check if buffer is critically low (< 0.3 seconds)
+    ///
+    /// This indicates urgent refill is needed to avoid audio underrun.
+    pub fn is_critically_low(&self) -> bool {
+        self.buffered_duration() < 0.3
+    }
+
+    /// Get the buffer capacity in seconds
+    pub fn capacity_duration(&self) -> f64 {
+        let inner = self.inner.lock().unwrap();
+        inner.capacity_samples as f64 / (inner.sample_rate as f64 * 2.0)
+    }
 }
 
 impl super::Buffer for AudioBuffer {

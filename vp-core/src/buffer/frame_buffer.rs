@@ -33,6 +33,9 @@ impl FrameBuffer {
     pub fn push(&self, frame: VideoFrame) {
         let mut inner = self.inner.lock().unwrap();
 
+        let pts = frame.pts;
+        let len_before = inner.frames.len();
+
         // Find insertion position to maintain PTS order
         let insert_pos = inner
             .frames
@@ -46,6 +49,9 @@ impl FrameBuffer {
         while inner.frames.len() > inner.capacity {
             inner.frames.pop_front();
         }
+
+        tracing::trace!("📦 FrameBuffer: pushed frame PTS {:.3}, len {} -> {}",
+            pts, len_before, inner.frames.len());
     }
 
     /// Get the frame to display at the given PTS
@@ -55,12 +61,22 @@ impl FrameBuffer {
         let inner = self.inner.lock().unwrap();
 
         // Find the latest frame with PTS <= target_pts
-        inner
+        let frame = inner
             .frames
             .iter()
             .rev()
             .find(|f| f.pts <= target_pts)
-            .cloned()
+            .cloned();
+
+        if let Some(ref f) = frame {
+            tracing::trace!("📦 FrameBuffer: get_frame_at({:.3}) -> PTS {:.3} (buffer_len={})",
+                target_pts, f.pts, inner.frames.len());
+        } else {
+            tracing::trace!("📦 FrameBuffer: get_frame_at({:.3}) -> None (buffer_len={})",
+                target_pts, inner.frames.len());
+        }
+
+        frame
     }
 
     /// Get the latest frame in the buffer
@@ -128,6 +144,73 @@ impl FrameBuffer {
 
         // If target is before all frames, return the first frame
         inner.frames.front().cloned()
+    }
+
+    // === Buffer Health Metrics for Pull-Based Decoding ===
+
+    /// Check if buffer needs refilling (50% threshold)
+    ///
+    /// Returns true when buffer has 50% or fewer frames remaining.
+    /// This is the trigger point for pull-based decode to start refilling.
+    pub fn needs_refill(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.frames.len() <= inner.capacity / 2
+    }
+
+    /// Get the number of frames needed to fill the buffer
+    pub fn frames_needed(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner.capacity.saturating_sub(inner.frames.len())
+    }
+
+    /// Check if buffer is critically low (< 3 frames)
+    ///
+    /// This indicates urgent refill is needed to avoid playback stutter.
+    pub fn is_critically_low(&self) -> bool {
+        self.len() < 3
+    }
+
+    /// Get the buffer capacity
+    pub fn capacity(&self) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner.capacity
+    }
+
+    /// Remove old frames that are far behind the current playback position
+    ///
+    /// This prevents the buffer from accumulating frames that will never be displayed again.
+    /// Keeps at least one frame before current_pts for seamless playback.
+    pub fn remove_old_frames(&self, current_pts: PTS) {
+        let mut inner = self.inner.lock().unwrap();
+
+        // Keep frames within 2 seconds behind current position (for backwards seek)
+        const KEEP_BEHIND_SECS: f64 = 2.0;
+        let cutoff_pts = current_pts - KEEP_BEHIND_SECS;
+
+        // Remove frames older than cutoff, but keep at least one frame before current_pts
+        let mut removed_count = 0;
+        while inner.frames.len() > 1 {
+            if let Some(oldest) = inner.frames.front() {
+                // Keep at least one frame at or before current_pts
+                if oldest.pts < cutoff_pts {
+                    // Check if there's a frame after this one that's still before current_pts
+                    if let Some(next) = inner.frames.get(1) {
+                        if next.pts <= current_pts {
+                            // Safe to remove this old frame
+                            inner.frames.pop_front();
+                            removed_count += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            break;
+        }
+
+        if removed_count > 0 {
+            tracing::debug!("📦 FrameBuffer: removed {} old frames (current_pts={:.3}, new_len={})",
+                removed_count, current_pts, inner.frames.len());
+        }
     }
 }
 
