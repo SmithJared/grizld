@@ -60,12 +60,12 @@ impl VideoBufferManager {
     }
 
     /// Update the audio system to point to the active buffer
-    fn update_audio_buffer(&self) {
+    fn update_audio_cache(&self) {
         if let Some(audio_state) = &self.audio_state {
             if let Some(buffer) = self.active_buffer() {
-                let audio_buffer = Arc::new(buffer.player.audio_buffer().clone());
+                let audio_cache = Arc::new(buffer.player.audio_cache());
                 let clock = Arc::new(buffer.player.clock().clone());
-                audio_state.set_active(audio_buffer, clock);
+                audio_state.set_active(audio_cache, clock);
                 tracing::debug!("Updated audio to buffer {}", buffer.id);
             } else {
                 audio_state.clear();
@@ -87,8 +87,8 @@ impl VideoBufferManager {
         }
 
         // Create new video player
-        let player = VideoPlayer::new(&file_path)
-            .map_err(|e| format!("Failed to open video: {}", e))?;
+        let player =
+            VideoPlayer::new(&file_path).map_err(|e| format!("Failed to open video: {}", e))?;
 
         let buffer_id = self.next_buffer_id;
         self.next_buffer_id += 1;
@@ -101,7 +101,7 @@ impl VideoBufferManager {
         self.active_buffer_id = Some(buffer_id);
 
         // Update audio to point to this new buffer
-        self.update_audio_buffer();
+        self.update_audio_cache();
 
         Ok(buffer_id)
     }
@@ -128,7 +128,7 @@ impl VideoBufferManager {
         self.active_buffer_id = Some(buffer_id);
 
         // Update audio to point to the new active buffer
-        self.update_audio_buffer();
+        self.update_audio_cache();
 
         // Resume if it was playing before
         if let Some(buffer) = self.buffers.get_mut(&buffer_id) {
@@ -151,7 +151,10 @@ impl VideoBufferManager {
         let mut buffer_ids: Vec<_> = self.buffers.keys().copied().collect();
         buffer_ids.sort();
 
-        let current_index = buffer_ids.iter().position(|&id| id == current_id).unwrap_or(0);
+        let current_index = buffer_ids
+            .iter()
+            .position(|&id| id == current_id)
+            .unwrap_or(0);
         let next_index = (current_index + 1) % buffer_ids.len();
         let next_id = buffer_ids[next_index];
 
@@ -168,7 +171,10 @@ impl VideoBufferManager {
         let mut buffer_ids: Vec<_> = self.buffers.keys().copied().collect();
         buffer_ids.sort();
 
-        let current_index = buffer_ids.iter().position(|&id| id == current_id).unwrap_or(0);
+        let current_index = buffer_ids
+            .iter()
+            .position(|&id| id == current_id)
+            .unwrap_or(0);
         let prev_index = if current_index == 0 {
             buffer_ids.len() - 1
         } else {
@@ -188,9 +194,7 @@ impl VideoBufferManager {
         // If deleting the active buffer, switch to another one first
         if self.active_buffer_id == Some(buffer_id) {
             // Find another buffer to switch to
-            let other_buffer = self.buffers.keys()
-                .find(|&&id| id != buffer_id)
-                .copied();
+            let other_buffer = self.buffers.keys().find(|&&id| id != buffer_id).copied();
 
             if let Some(other_id) = other_buffer {
                 self.switch_to(other_id)?;
@@ -204,14 +208,16 @@ impl VideoBufferManager {
         tracing::info!("Deleted buffer {}", buffer_id);
 
         // Update audio (might clear if no buffers left)
-        self.update_audio_buffer();
+        self.update_audio_cache();
 
         Ok(())
     }
 
     /// Get list of all buffers with their info
     pub fn list_buffers(&self) -> Vec<(BufferId, String, String, bool)> {
-        let mut buffers: Vec<_> = self.buffers.values()
+        let mut buffers: Vec<_> = self
+            .buffers
+            .values()
             .map(|b| {
                 let state = match b.player.state() {
                     PlaybackState::Playing => "playing",
@@ -235,8 +241,7 @@ impl VideoBufferManager {
 
     /// Get the active buffer (immutable)
     pub fn active_buffer(&self) -> Option<&VideoBuffer> {
-        self.active_buffer_id
-            .and_then(|id| self.buffers.get(&id))
+        self.active_buffer_id.and_then(|id| self.buffers.get(&id))
     }
 
     /// Check if any buffer is open

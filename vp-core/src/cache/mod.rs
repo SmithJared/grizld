@@ -1,11 +1,11 @@
-mod frame_buffer;
-mod audio_buffer;
+mod audio_cache;
+mod frame_cache;
 
-pub use frame_buffer::FrameBuffer;
-pub use audio_buffer::AudioBuffer;
+pub use audio_cache::AudioCache;
+pub use frame_cache::FrameCache;
 
 /// Common buffer operations shared between frame and audio buffers
-pub trait Buffer {
+pub trait Cache {
     /// Clear all items from the buffer
     fn clear(&self);
 

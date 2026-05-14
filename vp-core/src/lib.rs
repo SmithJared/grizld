@@ -1,17 +1,17 @@
 // vp-core: Video playback library
 // Provides hardware-accelerated video decoding, audio sync, and buffer management
 
-pub mod error;
-pub mod types;
-pub mod sync;
-pub mod buffer;
+pub mod cache;
 pub mod decoder;
+pub mod error;
+pub mod frame_scheduler;
 pub mod player;
-pub mod pull_coordinator;
+pub mod sync;
+pub mod types;
 
 // Re-export main types
 pub use error::{VpError, VpResult};
-pub use types::{VideoFrame, AudioSample, PlaybackState, PTS};
-pub use sync::{PlaybackClock, LoadingState};
+pub use frame_scheduler::{DecoderCommand, FrameScheduler};
 pub use player::VideoPlayer;
-pub use pull_coordinator::{PullCoordinator, CoordinatorCommand};
+pub use sync::{LoadingState, PlaybackClock};
+pub use types::{AudioSample, PlaybackState, VideoFrame, PTS};

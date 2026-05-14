@@ -7,7 +7,7 @@ use crate::command::{parse_command, Command, CommandExecutor};
 use crate::renderer::VideoRenderer as SoftwareRenderer;
 
 #[cfg(target_os = "macos")]
-use crate::metal::{LayerManager, LayerConfig, VideoRenderer as MetalVideoRenderer};
+use crate::metal::{LayerConfig, LayerManager, VideoRenderer as MetalVideoRenderer};
 
 /// Interval for flushing Metal texture cache (every N frames)
 #[cfg(target_os = "macos")]
@@ -113,14 +113,15 @@ impl EditorApp {
                 example: ":quit or :q".to_string(),
             },
         ];
-        
 
         // Create shared audio state
         let audio_state = SharedAudioState::new();
 
         // Create executor and set audio state
         let mut executor = CommandExecutor::new();
-        executor.buffer_manager_mut().set_audio_state(audio_state.clone());
+        executor
+            .buffer_manager_mut()
+            .set_audio_state(audio_state.clone());
 
         Self {
             executor,
@@ -266,7 +267,10 @@ impl EditorApp {
     fn show_file_picker(&mut self) {
         // Show file picker with video file filters
         let file = rfd::FileDialog::new()
-            .add_filter("Video Files", &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"])
+            .add_filter(
+                "Video Files",
+                &["mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v"],
+            )
             .add_filter("All Files", &["*"])
             .set_title("Open Video File")
             .pick_file();
@@ -298,9 +302,9 @@ impl EditorApp {
 
                     // Set the initial active buffer if one exists
                     if let Some(player) = self.executor.player() {
-                        let audio_buffer = Arc::new(player.audio_buffer().clone());
+                        let audio_cache = Arc::new(player.audio_cache().clone());
                         let clock = Arc::new(player.clock().clone());
-                        self.audio_state.set_active(audio_buffer, clock);
+                        self.audio_state.set_active(audio_cache, clock);
                         tracing::info!("Audio state set to initial buffer");
                     }
                 }
@@ -334,11 +338,11 @@ impl EditorApp {
             let current = player.current_time();
             let target = (current + offset).max(0.0).min(player.duration());
 
-            if let Err(e) = player.seek(target) {
-                self.error_message = Some(format!("Seek failed: {}", e));
-            } else {
-                self.status_message = format!("Seeked to {:.1}s", target);
-            }
+            // if let Err(e) = player.seek(target) {
+            //     self.error_message = Some(format!("Seek failed: {}", e));
+            // } else {
+            //     self.status_message = format!("Seeked to {:.1}s", target);
+            // }
         }
     }
 
@@ -478,7 +482,8 @@ impl EditorApp {
                     PlaybackState::Stopped => "⏹",
                 };
 
-                ui.label(format!("{} {:02}:{:05.2} / {:02}:{:05.2}",
+                ui.label(format!(
+                    "{} {:02}:{:05.2} / {:02}:{:05.2}",
                     state_icon,
                     (current / 60.0) as u32,
                     current % 60.0,
@@ -491,10 +496,6 @@ impl EditorApp {
                     .show_percentage()
                     .desired_width(200.0);
                 ui.add(progress_bar);
-
-                // Buffer stats
-                let (frame_count, audio_duration) = player.buffer_stats();
-                ui.label(format!("Buf: {}f / {:.1}s", frame_count, audio_duration));
             }
         });
     }
@@ -607,10 +608,13 @@ impl EditorApp {
                                         });
 
                                         ui.label(
-                                            egui::RichText::new(format!("  Example: {}", suggestion.example))
-                                                .size(11.0)
-                                                .color(egui::Color32::DARK_GRAY)
-                                                .italics(),
+                                            egui::RichText::new(format!(
+                                                "  Example: {}",
+                                                suggestion.example
+                                            ))
+                                            .size(11.0)
+                                            .color(egui::Color32::DARK_GRAY)
+                                            .italics(),
                                         );
                                     });
 
@@ -706,7 +710,10 @@ impl eframe::App for EditorApp {
                 layer.set_bounds(x, y, width, height);
                 tracing::trace!(
                     "Metal layer bounds: x={:.1}, y={:.1}, w={:.1}, h={:.1}",
-                    x, y, width, height
+                    x,
+                    y,
+                    width,
+                    height
                 );
             }
 
@@ -716,7 +723,8 @@ impl eframe::App for EditorApp {
                     if let Some(frame) = player.get_current_frame() {
                         if frame.data.is_hardware() {
                             // Extract PixelBuffer from hardware frame
-                            if let vp_core::types::FrameData::Hardware(ref pixel_buffer) = frame.data
+                            if let vp_core::types::FrameData::Hardware(ref pixel_buffer) =
+                                frame.data
                             {
                                 tracing::info!(
                                     "🖼️  RENDERING TO METAL LAYER: pts={:.3}, state={:?}, clock={:.3}",
@@ -735,7 +743,10 @@ impl eframe::App for EditorApp {
                                 // Flush texture cache periodically
                                 static FLUSH_COUNT: std::sync::atomic::AtomicU64 =
                                     std::sync::atomic::AtomicU64::new(0);
-                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % TEXTURE_CACHE_FLUSH_INTERVAL == 0 {
+                                if FLUSH_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                                    % TEXTURE_CACHE_FLUSH_INTERVAL
+                                    == 0
+                                {
                                     video_renderer.flush_cache();
                                 }
                             }

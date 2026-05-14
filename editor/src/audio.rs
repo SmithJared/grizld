@@ -1,38 +1,38 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Stream, StreamConfig};
 use std::sync::{Arc, Mutex};
-use vp_core::buffer::AudioBuffer;
+use vp_core::cache::AudioCache;
 use vp_core::sync::PlaybackClock;
 
 /// Shared audio state that can be updated when switching buffers
 #[derive(Clone)]
 pub struct SharedAudioState {
-    buffer: Arc<Mutex<Option<Arc<AudioBuffer>>>>,
+    cache: Arc<Mutex<Option<Arc<AudioCache>>>>,
     clock: Arc<Mutex<Option<Arc<PlaybackClock>>>>,
 }
 
 impl SharedAudioState {
     pub fn new() -> Self {
         Self {
-            buffer: Arc::new(Mutex::new(None)),
+            cache: Arc::new(Mutex::new(None)),
             clock: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Set the active audio buffer and clock
-    pub fn set_active(&self, buffer: Arc<AudioBuffer>, clock: Arc<PlaybackClock>) {
-        *self.buffer.lock().unwrap() = Some(buffer);
+    pub fn set_active(&self, buffer: Arc<AudioCache>, clock: Arc<PlaybackClock>) {
+        *self.cache.lock().unwrap() = Some(buffer);
         *self.clock.lock().unwrap() = Some(clock);
     }
 
     /// Clear the active buffer (when no video is playing)
     pub fn clear(&self) {
-        *self.buffer.lock().unwrap() = None;
+        *self.cache.lock().unwrap() = None;
         *self.clock.lock().unwrap() = None;
     }
 
-    fn get_buffer(&self) -> Option<Arc<AudioBuffer>> {
-        self.buffer.lock().unwrap().clone()
+    fn get_cache(&self) -> Option<Arc<AudioCache>> {
+        self.cache.lock().unwrap().clone()
     }
 
     fn get_clock(&self) -> Option<Arc<PlaybackClock>> {
@@ -63,11 +63,7 @@ impl AudioOutput {
         let sample_rate = config.sample_rate().0;
         let channels = config.channels() as usize;
 
-        tracing::info!(
-            "Audio config: {} Hz, {} channels",
-            sample_rate,
-            channels
-        );
+        tracing::info!("Audio config: {} Hz, {} channels", sample_rate, channels);
 
         let config: StreamConfig = config.into();
 
@@ -101,7 +97,7 @@ impl AudioOutput {
 
 fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
     // Get the current active buffer and clock
-    let audio_buffer = match shared_state.get_buffer() {
+    let audio_cache = match shared_state.get_cache() {
         Some(buffer) => buffer,
         None => {
             // No active buffer, output silence
@@ -124,14 +120,17 @@ fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
     if !clock_state.is_playing() {
         // Fill with silence when paused/stopped
         output.fill(0.0);
-        tracing::trace!("🔇 Audio callback: outputting silence (state={:?})", clock_state);
+        tracing::trace!(
+            "🔇 Audio callback: outputting silence (state={:?})",
+            clock_state
+        );
         return;
     }
 
     tracing::trace!("🔊 Audio callback: playing (state={:?})", clock_state);
 
     // Pop samples from the buffer (returns actual samples + silence padding, plus count of real samples)
-    let (samples, pts, actual_count) = audio_buffer.pop(output.len());
+    let (samples, pts, actual_count) = audio_cache.pop(output.len());
 
     // Copy samples to output
     for (i, &sample) in samples.iter().enumerate() {
@@ -149,9 +148,9 @@ fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
         let mid_pts = pts + (duration * 0.5);
 
         clock.update_from_audio(mid_pts);
-        tracing::trace!("Audio playing at PTS {:.2}s, buffer: {:.2}s", pts, audio_buffer.buffered_duration());
+        tracing::trace!("Audio playing at PTS {:.2}s", pts);
     } else {
         // No audio data available - buffer underrun (keep warning, it's important)
-        tracing::warn!("Audio buffer underrun, buffer duration: {:.2}s", audio_buffer.buffered_duration());
+        tracing::warn!("Audio buffer underrun",);
     }
 }

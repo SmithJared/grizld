@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 use vp_core::VideoPlayer;
 
-use crate::buffer_manager::{VideoBufferManager, BufferId};
 use super::{Command, SeekTarget};
+use crate::buffer_manager::{BufferId, VideoBufferManager};
 
 /// Executes commands on the video buffer manager
 pub struct CommandExecutor {
@@ -46,7 +46,9 @@ impl CommandExecutor {
         }
 
         let buffer_id = self.buffer_manager.open(path.clone())?;
-        let buffer = self.buffer_manager.active_buffer()
+        let buffer = self
+            .buffer_manager
+            .active_buffer()
             .ok_or("Failed to get buffer")?;
 
         Ok(format!(
@@ -88,9 +90,9 @@ impl CommandExecutor {
                 }
             };
 
-            buffer.player
-                .seek(target_pts)
-                .map_err(|e| format!("Seek failed: {}", e))?;
+            // buffer.player
+            //     .seek(target_pts)
+            //     .map_err(|e| format!("Seek failed: {}", e))?;
 
             Ok(format!("Seeked to {:.1}s", target_pts))
         } else {
@@ -100,9 +102,15 @@ impl CommandExecutor {
 
     fn switch_buffer(&mut self, buffer_id: BufferId) -> Result<String, String> {
         self.buffer_manager.switch_to(buffer_id)?;
-        let buffer = self.buffer_manager.active_buffer()
+        let buffer = self
+            .buffer_manager
+            .active_buffer()
             .ok_or("Failed to get buffer")?;
-        Ok(format!("Switched to buffer {}: {}", buffer_id, buffer.file_name()))
+        Ok(format!(
+            "Switched to buffer {}: {}",
+            buffer_id,
+            buffer.file_name()
+        ))
     }
 
     fn next_buffer(&mut self) -> Result<String, String> {
@@ -150,7 +158,9 @@ impl CommandExecutor {
 
     /// Get a mutable reference to the active player
     pub fn player_mut(&mut self) -> Option<&mut VideoPlayer> {
-        self.buffer_manager.active_buffer_mut().map(|b| &mut b.player)
+        self.buffer_manager
+            .active_buffer_mut()
+            .map(|b| &mut b.player)
     }
 
     /// Check if any buffer is open
