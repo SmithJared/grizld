@@ -61,7 +61,7 @@ impl VideoPlayer {
         let clock = PlaybackClock::new();
 
         // Create demux service (owns FFmpeg input, runs in its own thread)
-        let demux_service =
+        let (demux_service, demux_thread) =
             DemuxService::new(path.to_path_buf(), video_stream_index, audio_stream_index)?;
 
         // Create cache
@@ -71,6 +71,7 @@ impl VideoPlayer {
         // Create pull coordinator (video/audio workers pull from demuxer)
         let mut scheduler = FrameScheduler::new(
             demux_service,
+            demux_thread,
             clock.clone(),
             frame_cache,
             audio_cache.clone(),
@@ -197,7 +198,10 @@ impl VideoPlayer {
                 let frame = self.scheduler.request_frame();
                 frame
             }
-            PlaybackState::Paused => None,
+            PlaybackState::Paused => {
+                tracing::debug!("PAUSED");
+                None
+            }
             PlaybackState::Stopped => None,
         }
     }

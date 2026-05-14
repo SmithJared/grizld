@@ -42,6 +42,7 @@ pub struct FrameScheduler {
     // Worker threads
     video_worker: Option<JoinHandle<()>>,
     audio_worker: Option<JoinHandle<()>>,
+    demux_worker: Option<JoinHandle<()>>,
 
     // Command channels
     video_command_tx: Sender<DecoderCommand>,
@@ -54,6 +55,7 @@ impl FrameScheduler {
     /// Create a new pull coordinator
     pub fn new(
         demux_service: DemuxService,
+        demux_worker: Option<JoinHandle<()>>,
         clock: PlaybackClock,
         frame_cache: FrameCache,
         audio_cache: AudioCache,
@@ -63,6 +65,7 @@ impl FrameScheduler {
 
         Self {
             demux_service: Arc::new(demux_service),
+            demux_worker,
             frame_cache,
             audio_cache,
             clock,
@@ -93,12 +96,18 @@ impl FrameScheduler {
     pub fn stop_all(&mut self) {
         tracing::info!("Stopping Decoder/Demuxer workers");
 
+        self.video_command_tx.try_send(DecoderCommand::Stop);
+        self.audio_command_tx.try_send(DecoderCommand::Stop);
+        self.demux_service.stop();
         // Wait for workers to finish
         if let Some(worker) = self.video_worker.take() {
             let _ = worker.join();
         }
         if let Some(worker) = self.audio_worker.take() {
             let _ = worker.join();
+        }
+        if let Some(thread) = self.demux_worker.take() {
+            let _ = thread.join();
         }
 
         tracing::info!("Workers stopped");

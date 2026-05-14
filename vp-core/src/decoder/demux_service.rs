@@ -32,9 +32,6 @@ pub struct DemuxService {
     command_tx: crossbeam_channel::Sender<DemuxCommand>,
     stop_signal: Arc<AtomicBool>,
 
-    // Worker thread
-    demux_thread: Option<JoinHandle<()>>,
-
     // Stream info
     video_stream_index: usize,
     audio_stream_index: usize,
@@ -47,7 +44,7 @@ impl DemuxService {
         path: PathBuf,
         video_stream_index: usize,
         audio_stream_index: usize,
-    ) -> VpResult<Self> {
+    ) -> VpResult<(Self, Option<JoinHandle<()>>)> {
         tracing::info!("DemuxService::new() for {:?}", path);
 
         // Open input to get duration
@@ -92,17 +89,19 @@ impl DemuxService {
                 .map_err(|e| VpError::Io(e))?
         };
 
-        Ok(Self {
-            video_packets,
-            audio_packets,
-            command_tx,
-            stop_signal,
-            demux_thread: Some(demux_thread),
-            video_stream_index,
-            audio_stream_index,
-            duration,
-            path,
-        })
+        Ok((
+            Self {
+                video_packets,
+                audio_packets,
+                command_tx,
+                stop_signal,
+                video_stream_index,
+                audio_stream_index,
+                duration,
+                path,
+            },
+            Some(demux_thread),
+        ))
     }
 
     /// Get the file path
@@ -202,7 +201,7 @@ impl DemuxService {
     }
 
     /// Stop the demuxer
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
         self.stop_signal.store(true, Ordering::Relaxed);
         let _ = self.command_tx.send(DemuxCommand::Stop);
 
@@ -211,10 +210,6 @@ impl DemuxService {
         cvar.notify_all();
         let (_, cvar) = &*self.audio_packets;
         cvar.notify_all();
-
-        if let Some(thread) = self.demux_thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 
@@ -286,6 +281,7 @@ fn demux_loop(
                     }
                 }
                 DemuxCommand::Stop => {
+                    stop_signal.store(true, Ordering::Relaxed);
                     tracing::info!("Demux thread: stop command received");
                     break;
                 }
