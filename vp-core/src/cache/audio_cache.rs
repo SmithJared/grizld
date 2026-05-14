@@ -101,6 +101,18 @@ impl AudioCache {
         // If buffer was empty, this is the first sample - set playback PTS
         if inner.ahead.is_empty() {
             inner.current_playback_pts = audio.pts;
+            tracing::debug!("🔊 AudioCache: buffer was empty, setting playback_pts={:.3}", audio.pts);
+        } else {
+            // Calculate what the expected PTS should be based on buffer duration
+            let buffered_frames = inner.ahead.len() / 2;
+            let buffered_duration = buffered_frames as f64 / inner.sample_rate as f64;
+            let expected_pts = inner.current_playback_pts + buffered_duration;
+            let pts_diff = audio.pts - expected_pts;
+
+            tracing::debug!(
+                "🔊 AudioCache: decoder_pts={:.3}, expected_pts={:.3}, diff={:.3}, buffered_dur={:.3}",
+                audio.pts, expected_pts, pts_diff, buffered_duration
+            );
         }
 
         // Track the PTS of the newest decoded audio (end of buffer)

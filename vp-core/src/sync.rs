@@ -96,11 +96,24 @@ impl PlaybackClock {
     /// Update the clock from the audio callback
     ///
     /// This should be called by the CPAL audio thread when it outputs audio samples.
+    /// It applies a gentle correction to keep the clock in sync with audio playback
+    /// without causing jarring resets.
     pub fn update_from_audio(&self, pts: PTS) {
         let mut state = self.state.lock().unwrap();
         if state.state.is_playing() {
-            state.audio_base_pts = pts;
-            state.audio_start_time = Instant::now();
+            // Calculate how much the clock has drifted from audio
+            let elapsed = state.audio_start_time.elapsed().as_secs_f64();
+            let clock_pts = state.audio_base_pts + elapsed;
+            let drift = pts - clock_pts;
+
+            // Only apply correction if drift is significant (> 50ms)
+            // Otherwise let the clock run freely to avoid constant resets
+            if drift.abs() > 0.05 {
+                tracing::debug!("🕐 Clock drift {:.3}s, correcting to audio PTS {:.3}", drift, pts);
+                state.audio_base_pts = pts;
+                state.audio_start_time = Instant::now();
+            }
+
             state.current_pts = pts;
         }
     }

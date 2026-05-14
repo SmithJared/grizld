@@ -56,24 +56,48 @@ impl AudioOutput {
 
         tracing::info!("Using audio device: {}", device.name().unwrap_or_default());
 
-        let config = device
-            .default_output_config()
-            .map_err(|e| format!("Failed to get audio config: {}", e))?;
+        // Force 48kHz stereo to match our decoder output
+        let desired_config = StreamConfig {
+            channels: 2,
+            sample_rate: cpal::SampleRate(48000),
+            buffer_size: cpal::BufferSize::Default,
+        };
 
-        let sample_rate = config.sample_rate().0;
-        let channels = config.channels() as usize;
+        // Check if the device supports our desired config
+        let supported_configs = device
+            .supported_output_configs()
+            .map_err(|e| format!("Failed to query supported configs: {}", e))?;
+
+        let mut found_48khz = false;
+        for config_range in supported_configs {
+            if config_range.channels() == 2
+                && config_range.min_sample_rate().0 <= 48000
+                && config_range.max_sample_rate().0 >= 48000
+            {
+                found_48khz = true;
+                break;
+            }
+        }
+
+        if !found_48khz {
+            tracing::warn!("Device may not support 48kHz stereo, attempting anyway...");
+        }
+
+        let sample_rate = 48000;
+        let channels = 2;
 
         tracing::info!("Audio config: {} Hz, {} channels", sample_rate, channels);
 
-        let config: StreamConfig = config.into();
+        let config = desired_config;
 
         let state_for_callback = shared_state.clone();
+        let callback_sample_rate = sample_rate;
 
         let stream = device
             .build_output_stream(
                 &config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    audio_callback(data, &state_for_callback)
+                    audio_callback(data, &state_for_callback, callback_sample_rate)
                 },
                 |err| {
                     tracing::error!("Audio stream error: {}", err);
@@ -95,7 +119,7 @@ impl AudioOutput {
     }
 }
 
-fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
+fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState, sample_rate: u32) {
     // Get the current active buffer and clock
     let audio_cache = match shared_state.get_cache() {
         Some(buffer) => buffer,
@@ -144,12 +168,14 @@ fn audio_callback(output: &mut [f32], shared_state: &SharedAudioState) {
         // Calculate the PTS at the middle of the buffer being played
         // This accounts for the fact that these samples will be playing over the next callback period
         let frames_in_buffer = actual_count / 2; // Stereo
-        let duration = frames_in_buffer as f64 / 48000.0;
+        let duration = frames_in_buffer as f64 / sample_rate as f64;
         let mid_pts = pts + (duration * 0.5);
 
         clock.update_from_audio(mid_pts);
-        tracing::debug!("🔊 Audio callback: pts={:.3}, mid_pts={:.3}, clock_now={:.3}",
-            pts, mid_pts, clock.current_time());
+        tracing::debug!(
+            "🔊 Audio callback: requested={}, actual={}, frames={}, duration={:.4}s, pts={:.3}, mid_pts={:.3}, sample_rate={}",
+            output.len(), actual_count, frames_in_buffer, duration, pts, mid_pts, sample_rate
+        );
     } else {
         // No audio data available - buffer underrun (keep warning, it's important)
         tracing::warn!("Audio buffer underrun",);
